@@ -86,6 +86,13 @@ def rewrite_info(project: Path) -> None:
         if s.count(old) != 1:
             raise RuntimeError(f"Expected exactly one Gradle metadata field {old!r}")
         s = s.replace(old, new, 1)
+    # The upstream Morphe shared library also bundles generic all-app patches.
+    # None is used by our four realme patches; keep them out of the local .mpp.
+    build_marker = 'tasks {\n    jar {'
+    if s.count(build_marker) != 1:
+        raise RuntimeError("Expected upstream jar task not found")
+    s = s.replace(build_marker,
+        'tasks {\n    jar {\n        exclude("app/morphe/patches/all/**")', 1)
     gradle.write_text(s, encoding="utf-8")
 
     prop_file = project / "gradle.properties"
