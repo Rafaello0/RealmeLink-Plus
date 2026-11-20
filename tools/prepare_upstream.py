@@ -21,14 +21,13 @@ def clean_other_sources(project: Path) -> None:
     required = [
         patches / "realmelink",
         patches / "shared/compat/AppCompatibilities.kt",
-        patches / "shared/misc/png/PngImage.kt",
+        project / "patches/src/main/java/app/morphe/patches/shared/misc/png/PngImage.java",
     ]
     for path in required:
         if not path.exists():
             raise RuntimeError(f"Missing expected upstream/overlay source: {path}")
     allowed_shared = {
         Path("compat/AppCompatibilities.kt"),
-        Path("misc/png/PngImage.kt"),
     }
     for child in patches.iterdir():
         if child.name == "realmelink":
