@@ -32,6 +32,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Java mode-memory simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/test_runtime_java.py
+
       - name: Validate source tree
         shell: bash
         run: |
