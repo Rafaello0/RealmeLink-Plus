@@ -11,7 +11,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: morphe-mpp-\${{ github.ref }}
+  group: morphe-mpp-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -63,8 +63,8 @@ jobs:
         working-directory: upstream
         shell: bash
         env:
-          GITHUB_ACTOR: \${{ github.actor }}
-          GITHUB_TOKEN: \${{ secrets.MORPHE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.MORPHE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           chmod +x ./gradlew
@@ -77,12 +77,12 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           files=(upstream/patches/build/libs/*.mpp)
-          if (( \${#files[@]} != 1 )); then
-            echo "Expected one .mpp, found \${#files[@]}" >&2
+          if (( ${#files[@]} != 1 )); then
+            echo "Expected one .mpp, found ${#files[@]}" >&2
             exit 1
           fi
           mkdir -p dist
-          cp "\${files[0]}" dist/RealmeLink-Plus_build001.mpp
+          cp "${files[0]}" dist/RealmeLink-Plus_build001.mpp
           test -s dist/RealmeLink-Plus_build001.mpp
           sha256sum dist/RealmeLink-Plus_build001.mpp
 
