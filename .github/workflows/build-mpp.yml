@@ -1,0 +1,95 @@
+name: Build Morphe MPP
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: morphe-mpp-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Verify sources and build local MPP
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout RealmeLink Plus
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Validate source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
+          test -s overlay/extensions/extension/src/main/java/app/hxreborn/extension/realmelink/ModeKeeper.java
+          grep -Fq 'Remember noise control mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
+          grep -Fq 'Remember game mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
+
+      - name: Checkout pinned hxreborn 1.80.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch v1.80.0 https://github.com/hxreborn/morphe-patches.git upstream
+          actual="$(git -C upstream rev-parse HEAD)"
+          test "$actual" = "83839f596c9c7d8555c97809c34c2daabde03ec7" || { echo "Unexpected upstream revision $actual"; exit 1; }
+          test -f upstream/LICENSE
+          test -f upstream/NOTICE
+          test -f upstream/patches/src/main/kotlin/app/morphe/patches/realmelink/theme/AmoledThemePatch.kt
+          test -f upstream/patches/src/main/kotlin/app/morphe/patches/realmelink/session/BypassSessionExpiryPatch.kt
+
+      - name: Overlay local patch sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a overlay/. upstream/
+
+      - name: Compile and bundle
+        working-directory: upstream
+        shell: bash
+        env:
+          GITHUB_ACTOR: \${{ github.actor }}
+          GITHUB_TOKEN: \${{ secrets.MORPHE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :patches:buildAndroid --no-daemon --stacktrace
+          ls -lah patches/build/libs/
+
+      - name: Verify MPP output
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(upstream/patches/build/libs/*.mpp)
+          if (( \${#files[@]} != 1 )); then
+            echo "Expected one .mpp, found \${#files[@]}" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          cp "\${files[0]}" dist/RealmeLink-Plus_build001.mpp
+          test -s dist/RealmeLink-Plus_build001.mpp
+          sha256sum dist/RealmeLink-Plus_build001.mpp
+
+      - name: Upload compiled Morphe patches
+        uses: actions/upload-artifact@v4
+        with:
+          name: RealmeLink-Plus_build001_MPP
+          path: dist/RealmeLink-Plus_build001.mpp
+          if-no-files-found: error
+          retention-days: 30
