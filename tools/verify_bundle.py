@@ -31,7 +31,7 @@ with zipfile.ZipFile(args.mpp) as z:
     for name in names:
         if name.startswith("app/morphe/patches/") and name.endswith(".class"):
             rel=name.removeprefix("app/morphe/patches/")
-            if not (rel.startswith("realmelink/") or rel.startswith("shared/compat/") or rel.startswith("shared/misc/png/")):
+            if not (rel.startswith("realmelink/") or rel.startswith("shared/")):
                 raise SystemExit(f"Non-realme patch class inside local MPP: {name}")
     assert z.read("extensions/extension.mpe")[:4]==b"dex\n", "Invalid runtime extension DEX"
     print("MPP VERIFIED:",args.mpp.name,fields["Name"],fields["Version"],
