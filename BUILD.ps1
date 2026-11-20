@@ -25,6 +25,7 @@ function Assert-Success([string]$step) {
 }
 
 Require-Tool "git"
+Require-Tool "python"
 Require-Tool "java"
 $javaVersion = (& java -version 2>&1 | Select-Object -First 1)
 Write-Host "Java: $javaVersion"
@@ -54,6 +55,9 @@ foreach ($relative in @(
     Write-Host "Overlay $relative"
 }
 
+
+& python (Join-Path $root "tools\prepare_upstream.py") $repo
+Assert-Success "Prepare upstream and rename bundle"
 Push-Location $repo
 try {
     & .\gradlew.bat ":patches:buildAndroid" "--no-daemon" "--stacktrace"
@@ -65,7 +69,9 @@ try {
 $files = @(Get-ChildItem -LiteralPath (Join-Path $repo "patches\build\libs") -Filter "*.mpp" -File)
 if ($files.Count -ne 1) { throw "Expected exactly one .mpp, found $($files.Count)" }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
-$target = Join-Path $dist "RealmeLink-Plus_build001.mpp"
+$target = Join-Path $dist "RealmeLink-Plus_build002.mpp"
 Copy-Item -LiteralPath $files[0].FullName -Destination $target -Force
+& python (Join-Path $root "tools\verify_bundle.py") $target
+Assert-Success "Validate bundle metadata"
 Write-Host "Created: $target"
 Write-Host "SHA256: $((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)"

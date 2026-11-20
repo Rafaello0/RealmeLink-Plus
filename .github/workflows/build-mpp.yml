@@ -65,6 +65,12 @@ jobs:
           set -euo pipefail
           cp -a overlay/. upstream/
 
+      - name: Prepare branded realme-only bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/prepare_upstream.py upstream
+
       - name: Compile and bundle
         working-directory: upstream
         shell: bash
@@ -97,14 +103,15 @@ jobs:
             exit 1
           fi
           mkdir -p dist
-          cp "${files[0]}" dist/RealmeLink-Plus_build001.mpp
-          test -s dist/RealmeLink-Plus_build001.mpp
-          sha256sum dist/RealmeLink-Plus_build001.mpp
+          cp "${files[0]}" dist/RealmeLink-Plus_build002.mpp
+          test -s dist/RealmeLink-Plus_build002.mpp
+          python3 tools/verify_bundle.py dist/RealmeLink-Plus_build002.mpp
+          sha256sum dist/RealmeLink-Plus_build002.mpp
 
       - name: Upload compiled Morphe patches
         uses: actions/upload-artifact@v4
         with:
-          name: RealmeLink-Plus_build001_MPP
-          path: dist/RealmeLink-Plus_build001.mpp
+          name: RealmeLink-Plus_build002_MPP
+          path: dist/RealmeLink-Plus_build002.mpp
           if-no-files-found: error
           retention-days: 30
