@@ -69,12 +69,21 @@ jobs:
         working-directory: upstream
         shell: bash
         env:
-          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR: ${{ github.repository_owner }}
           GITHUB_TOKEN: ${{ secrets.MORPHE_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew :patches:buildAndroid --no-daemon --stacktrace
+          set +e
+          ./gradlew :patches:buildAndroid --no-daemon --stacktrace 2>&1 | tee gradle-build.log
+          result=${PIPESTATUS[0]}
+          set -e
+          if (( result != 0 )); then
+            if grep -Fq "Plugin [id: 'app.morphe.patches'" gradle-build.log; then
+              echo "::error::Morphe plugin is not accessible through GitHub Packages. Create a classic PAT with read:packages and save it as repository Actions secret MORPHE_PACKAGES_TOKEN."
+            fi
+            exit "$result"
+          fi
           ls -lah patches/build/libs/
 
       - name: Verify MPP output

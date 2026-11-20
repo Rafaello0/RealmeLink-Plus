@@ -25,3 +25,18 @@
 
 ## Ліцензія
 Нові модифікації GPL-3.0-only; оригінальні патчі hxreborn також GPL-3.0-only. Зберігати copyright, LICENSE і NOTICE upstream.
+
+## Доступ до GitHub Packages (якщо Gradle не знаходить Morphe)
+
+Плагін Morphe `app.morphe.patches:2.1.0` поширюється через GitHub Packages.
+Стандартний `GITHUB_TOKEN` приватного репозиторію може не мати доступу до пакетів чужої організації.
+Створіть **Personal access token (classic)** тільки з правом `read:packages` у https://github.com/settings/tokens.
+У GitHub репозиторію: **Settings → Secrets and variables → Actions → New repository secret**:
+
+- Name: `MORPHE_PACKAGES_TOKEN`
+- Secret: створений classic PAT (не пишіть його у чат, вихідний код чи логи).
+
+Після збереження: **Actions → Build Morphe MPP → Run workflow**.
+Успішний артефакт: `RealmeLink-Plus_build001_MPP` з файлом `RealmeLink-Plus_build001.mpp`.
+
+Це не потрібно для **встановлення** готового `.mpp` у Morphe, лише для **складання**.
