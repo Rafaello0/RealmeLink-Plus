@@ -1,5 +1,7 @@
 # RealmeLink Plus
 
+![RealmeLink Plus robotic capybara](patches-bundle.png)
+
 **Автор: RaFaeLL0** (оригінальні AMOLED/session патчі hxreborn, GPL-3.0-only).
 
 [Додати RealmeLink Plus у Morphe](https://morphe.software/add-source?github=Rafaello0/RealmeLink-Plus&name=RealmeLink%20Plus&app=com.realme.link)
