@@ -37,6 +37,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Verify Morphe release metadata contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/test_release_metadata.py
+
       - name: Java mode-memory simulation
         shell: bash
         run: |
