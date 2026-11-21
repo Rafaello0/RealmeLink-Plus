@@ -1,5 +1,13 @@
 # RealmeLink Plus
 
+**Автор: RaFaeLL0** (оригінальні AMOLED/session патчі hxreborn, GPL-3.0-only).
+
+[Додати RealmeLink Plus у Morphe](https://morphe.software/add-source?github=Rafaello0/RealmeLink-Plus&name=RealmeLink%20Plus&app=com.realme.link)
+
+Посилання працює як віддалене джерело з автоматичним оновленням, **лише коли цей репозиторій публічний**, а GitHub Release та `patches-bundle.json` доступні без авторизації.
+Важливо: локальні `.mpp` через Sources → Local не оновлюються автоматично.
+
+
 Локальні патчі Morphe для realme Link `com.realme.link` 5.8.811.2814.
 
 ## Склад
@@ -76,3 +84,12 @@ BUILD001 хибно представлявся як `hxreborn’s patches v1.80.
 `homeRecyclerView` зі справжніми пристроями й налаштуваннями не змінюється. ID прихованих елементів залишаються, щоб не ламати програмне прив'язування Views. Усі зміни обмежені `res/layout/fragment_main.xml` і підтримуваною версією APK 5.8.811.2814.
 
 Під час оновлення до BUILD003 видали старе локальне джерело BUILD002 із Morphe та додай новий `.mpp`, потім патч оригінальний XAPK заново.
+
+
+## Автоматичне оновлення через GitHub Releases
+
+При кожному успішному збиранні `main` workflow створює нову версію `v0.3.<run_number>`, завантажує `.mpp` як asset у GitHub Release і **лише після перевірки** записує `patches-bundle.json` (поля `version`, `download_url`, `created_at`, `description`). Саме цей JSON Morphe використовує для перевірки оновлень. Коміти тільки з метаданими ігноруються CI, щоб не створювати нескінченні збірки.
+
+**Обов’язково:** Settings → General → Danger Zone → Change repository visibility → Public. GitHub connector не змінює видимість репозиторію. До цього моменту посилання на джерело в Morphe не зможе працювати для інших користувачів.
+
+Перевірка після публікації: [patches-bundle.json](https://raw.githubusercontent.com/Rafaello0/RealmeLink-Plus/main/patches-bundle.json), [Releases](https://github.com/Rafaello0/RealmeLink-Plus/releases) і [встановлення](<https://morphe.software/add-source?github=Rafaello0/RealmeLink-Plus&name=RealmeLink%20Plus&app=com.realme.link>).

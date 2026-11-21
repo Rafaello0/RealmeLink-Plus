@@ -3,6 +3,9 @@ name: Build Morphe MPP
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - patches-bundle.json
+      - patches-list.json
   pull_request:
   workflow_dispatch:
 
@@ -19,6 +22,8 @@ jobs:
     name: Verify sources and build local MPP
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      REALMELINK_RELEASE_VERSION: 0.3.${{ github.run_number }}
     steps:
       - name: Checkout RealmeLink Plus
         uses: actions/checkout@v4
@@ -114,15 +119,88 @@ jobs:
             exit 1
           fi
           mkdir -p dist
-          cp "${files[0]}" dist/RealmeLink-Plus_build003.mpp
-          test -s dist/RealmeLink-Plus_build003.mpp
-          python3 tools/verify_bundle.py dist/RealmeLink-Plus_build003.mpp
-          sha256sum dist/RealmeLink-Plus_build003.mpp
+          cp "${files[0]}" dist/RealmeLink-Plus_build${{ github.run_number }}.mpp
+          test -s dist/RealmeLink-Plus_build${{ github.run_number }}.mpp
+          python3 tools/verify_bundle.py dist/RealmeLink-Plus_build${{ github.run_number }}.mpp
+          sha256sum dist/RealmeLink-Plus_build${{ github.run_number }}.mpp
 
       - name: Upload compiled Morphe patches
         uses: actions/upload-artifact@v4
         with:
-          name: RealmeLink-Plus_build003_MPP
-          path: dist/RealmeLink-Plus_build003.mpp
+          name: RealmeLink-Plus_build${{ github.run_number }}_MPP
+          path: dist/RealmeLink-Plus_build${{ github.run_number }}.mpp
           if-no-files-found: error
           retention-days: 30
+
+
+  release:
+    name: Publish versioned remote patch source
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_VERSION: 0.3.${{ github.run_number }}
+      RELEASE_TAG: v0.3.${{ github.run_number }}
+      BUNDLE_FILENAME: RealmeLink-Plus_build${{ github.run_number }}.mpp
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download verified MPP
+        uses: actions/download-artifact@v4
+        with:
+          name: RealmeLink-Plus_build${{ github.run_number }}_MPP
+          path: dist
+
+      - name: Check verified MPP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "dist/$BUNDLE_FILENAME"
+          REALMELINK_RELEASE_VERSION="$RELEASE_VERSION" python3 tools/verify_bundle.py "dist/$BUNDLE_FILENAME"
+          sha256sum "dist/$BUNDLE_FILENAME"
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; verifying asset."
+            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fx "$BUNDLE_FILENAME"
+          else
+            gh release create "$RELEASE_TAG" "dist/$BUNDLE_FILENAME" \
+              --title "RealmeLink Plus $RELEASE_TAG" \
+              --notes "RealmeLink Plus $RELEASE_TAG by RaFaeLL0. Five Morphe patches for realme Link 5.8.811.2814, including two preserved GPL-3.0-only patches from hxreborn. Import with Morphe Sources. This build has automated compilation and packaging tests; physical-device testing is separate." \
+              --latest
+          fi
+
+      - name: Generate remote metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/write_release_metadata.py \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --asset "$BUNDLE_FILENAME" \
+            --out patches-bundle.json
+          python3 -m json.tool patches-bundle.json >/dev/null
+
+      - name: Commit source metadata without triggering a new build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add patches-bundle.json
+          if git diff --cached --quiet; then
+            echo "No metadata changes"
+            exit 0
+          fi
+          git commit -m "chore: publish Morphe patch metadata $RELEASE_TAG"
+          git push origin "HEAD:main"

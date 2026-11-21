@@ -7,12 +7,13 @@ user APKs, Android devices, system settings or credentials.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
 
 UPSTREAM_SHA = "83839f596c9c7d8555c97809c34c2daabde03ec7"
-RELEASE_VERSION = "0.3.0"
+RELEASE_VERSION = os.environ.get("REALMELINK_RELEASE_VERSION", "0.3.0")
 BUNDLE_NAME = "RealmeLink Plus"
 
 
@@ -76,7 +77,7 @@ def rewrite_info(project: Path) -> None:
         'source = "git@github.com:hxreborn/morphe-patches.git"':
             'source = "https://github.com/Rafaello0/RealmeLink-Plus"',
         'author = "hxreborn"':
-            'author = "RealmeLink Plus contributors; upstream patches by hxreborn"',
+            'author = "RaFaeLL0"',
         'contact = "https://github.com/hxreborn/morphe-patches/issues"':
             'contact = "https://github.com/Rafaello0/RealmeLink-Plus/issues"',
         'website = "https://github.com/hxreborn/morphe-patches"':

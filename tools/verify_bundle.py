@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail the build unless this is a uniquely named, realme-only local .mpp."""
 import argparse
+import os
 from pathlib import Path
 import re
 import zipfile
@@ -16,7 +17,7 @@ with zipfile.ZipFile(args.mpp) as z:
     mf=z.read("META-INF/MANIFEST.MF").decode("utf-8")
     fields=dict(re.findall(r"(?m)^([A-Za-z-]+): ([^\r\n]*)",mf))
     assert fields.get("Name")=="RealmeLink Plus", fields
-    assert fields.get("Version")=="0.3.0", fields
+    assert fields.get("Version")==os.environ.get("REALMELINK_RELEASE_VERSION", "0.3.0"), fields
     assert fields.get("Source")=="https://github.com/Rafaello0/RealmeLink-Plus", fields
     assert "Patcher-Version" in fields, fields
     required={
