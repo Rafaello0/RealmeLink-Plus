@@ -41,9 +41,9 @@ def main() -> None:
     }
     # Morphe Manager ReleaseAsset uses Java LocalDateTime.parse(), which rejects 'Z'.
     # Keep the timestamp as UTC *clock time* without an offset suffix.
-    if not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}", obj["created_at"]):
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", obj["created_at"]):
         raise ValueError("created_at must be ISO_LOCAL_DATE_TIME (no timezone suffix)")
-    args.out.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\\n", encoding="utf-8")
+    args.out.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps(obj, indent=2, ensure_ascii=False))
 
 
