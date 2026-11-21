@@ -7,7 +7,6 @@
  */
 package app.morphe.patches.realmelink.home
 
-import app.morphe.patcher.patch.bytecodePatch
 import app.morphe.patcher.patch.resourcePatch
 import app.morphe.patches.shared.compat.AppCompatibilities
 import org.w3c.dom.Element

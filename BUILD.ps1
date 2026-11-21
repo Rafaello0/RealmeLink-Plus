@@ -45,6 +45,7 @@ if ($actual -ne $expected) { throw "Unexpected hxreborn commit: $actual" }
 
 foreach ($relative in @(
     "patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt",
+    "patches/src/main/kotlin/app/morphe/patches/realmelink/home/CleanHomeScreenPatch.kt",
     "extensions/extension/src/main/java/app/hxreborn/extension/realmelink/ModeKeeper.java"
 )) {
     $from = Join-Path $overlay $relative
@@ -69,7 +70,7 @@ try {
 $files = @(Get-ChildItem -LiteralPath (Join-Path $repo "patches\build\libs") -Filter "*.mpp" -File)
 if ($files.Count -ne 1) { throw "Expected exactly one .mpp, found $($files.Count)" }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
-$target = Join-Path $dist "RealmeLink-Plus_build002.mpp"
+$target = Join-Path $dist "RealmeLink-Plus_build003.mpp"
 Copy-Item -LiteralPath $files[0].FullName -Destination $target -Force
 & python (Join-Path $root "tools\verify_bundle.py") $target
 Assert-Success "Validate bundle metadata"

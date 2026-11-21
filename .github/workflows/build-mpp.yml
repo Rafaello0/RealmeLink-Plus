@@ -47,6 +47,17 @@ jobs:
           grep -Fq 'Remember noise control mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
           grep -Fq 'Remember game mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
 
+      - name: Validate home-screen patch source
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/home/CleanHomeScreenPatch.kt
+          test -s "$src"
+          grep -Fq 'fragment_main.xml' "$src"
+          for target in MainAdvertiseView rl_virtual_device_title recycle_view_virtual_device; do
+            grep -Fq "$target" "$src"
+          done
+
       - name: Checkout pinned hxreborn 1.80.0
         shell: bash
         run: |
@@ -103,15 +114,15 @@ jobs:
             exit 1
           fi
           mkdir -p dist
-          cp "${files[0]}" dist/RealmeLink-Plus_build002.mpp
-          test -s dist/RealmeLink-Plus_build002.mpp
-          python3 tools/verify_bundle.py dist/RealmeLink-Plus_build002.mpp
-          sha256sum dist/RealmeLink-Plus_build002.mpp
+          cp "${files[0]}" dist/RealmeLink-Plus_build003.mpp
+          test -s dist/RealmeLink-Plus_build003.mpp
+          python3 tools/verify_bundle.py dist/RealmeLink-Plus_build003.mpp
+          sha256sum dist/RealmeLink-Plus_build003.mpp
 
       - name: Upload compiled Morphe patches
         uses: actions/upload-artifact@v4
         with:
-          name: RealmeLink-Plus_build002_MPP
-          path: dist/RealmeLink-Plus_build002.mpp
+          name: RealmeLink-Plus_build003_MPP
+          path: dist/RealmeLink-Plus_build003.mpp
           if-no-files-found: error
           retention-days: 30
