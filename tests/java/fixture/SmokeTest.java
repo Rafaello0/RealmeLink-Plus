@@ -6,7 +6,7 @@ import com.realme.iot.headset.activity.device.HeadsetDeviceActivity;
 import com.realme.iot.headset.manager.HeadsetManager;
 import com.realme.iot.headset.manager.HeadsetManagerProxy;
 public class SmokeTest {
- private enum Status { CONNECTED, DISCONNECTED, CONNECTING }
+ private enum Status { CONNECTED, DISCONNECTED, CONNECTING, HEADSET_CONNECTED, HEADSET_DISCONNECTED, CONNECT_FAIL, DATA_SYNCING, A2DP_CONNECTED }
  private static void check(boolean v,String text){if(!v)throw new IllegalStateException(text);}
  public static void main(String[] args){
   HeadsetDeviceActivity a=new HeadsetDeviceActivity();
@@ -90,6 +90,39 @@ public class SmokeTest {
   ModeKeeper.onVendorStatus(bud, Status.CONNECTING);
   Handler.drain();
   check(m.writes==before,"intermediate status ignored");
+  ModeKeeper.onVendorStatus(bud, Status.CONNECT_FAIL);Handler.drain();
+  m.actual.put("001122334455:2:0",0);
+  m.rejectedReads=2;
+  m.replyDelay=500;
+  ModeKeeper.onVendorStatus(bud, Status.HEADSET_CONNECTED);
+  Handler.drain();
+  check(m.actual.get("001122334455:2:0")==1,"headset state and transient rejected read recovered");
+  check(!ModeKeeper.hasPendingChecks("00:11:22:33:44:55"),"finished checks released");
+  ModeKeeper.onVendorStatus(bud, Status.HEADSET_DISCONNECTED);Handler.drain();
+  m.actual.put("001122334455:2:0",0);
+  m.replyDelay=3000;
+  before=m.writes;
+  ModeKeeper.onDeviceReady(bud);Handler.drain();
+  check(m.writes==before,"late reply after timeout ignored");
+  m.replyDelay=500;
+  ModeKeeper.onConnection(bud,false);
+  m.conflictingReplies=true;
+  ModeKeeper.onDeviceReady(bud);Handler.drain();
+  check(m.writes==before,"conflicting replies never write");
+  m.conflictingReplies=false;
+  ModeKeeper.onConnection(bud,false);
+  ModeKeeper.onDeviceReady(bud);
+  Handler.advance(1700);
+  check(ModeKeeper.hasPendingChecks("001122334455"),"in-flight request tracked");
+  ModeKeeper.cancelPendingChecks("001122334455");
+  Handler.drain();
+  check(m.writes==before,"cancel invalidates delayed reply");
+  check(!ModeKeeper.hasPendingChecks("001122334455"),"cancel releases session");
+  m.replyDelay=0;
+  ModeKeeper.onVendorStatus(bud,Status.A2DP_CONNECTED);Handler.drain();
+  check(m.writes==before,"transport-only event not treated as ready");
+  ModeKeeper.onVendorStatus(bud,Status.DATA_SYNCING);Handler.drain();
+  check(m.actual.get("001122334455:2:0")==1,"data-syncing readiness with verified query");
   GestureTest.run();
   System.out.println("SMOKE PASS: saved modes, read-before-write, verify, cooldown, unknown rows");
  }

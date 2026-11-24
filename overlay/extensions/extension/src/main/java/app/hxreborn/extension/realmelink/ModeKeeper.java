@@ -37,6 +37,7 @@ public final class ModeKeeper {
     private static final long UI_WINDOW_MS = 1600L;
     private static final long[] CHECK_DELAYS_MS = { 1700L, 4000L, 8000L };
     private static final long QUERY_TIMEOUT_MS = 2600L;
+    private static final String[] MODES = {"anc", "game"};
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ThreadLocal<UiTag> ACTION = new ThreadLocal<>();
     private static final Map<String, Check> CHECKS = new HashMap<>();
@@ -208,10 +209,18 @@ public final class ModeKeeper {
     public static void onVendorStatus(Object device, Object status) {
         if (!(status instanceof Enum<?>) || mac(device) == null) return;
         String name = ((Enum<?>)status).name();
-        if ("CONNECTED".equals(name) || "TWS_CONNECTED".equals(name))
-            MAIN.post(() -> onConnection(device, true));
-        else if ("DISCONNECTED".equals(name) || "TWS_DISCONNECTED".equals(name))
-            MAIN.post(() -> onConnection(device, false));
+        // Exact enum constants in the target DEX; transport-only A2DP/SPP
+        // events do not prove that the vendor settings channel is ready.
+        switch (name) {
+            case "CONNECTED": case "TWS_CONNECTED": case "HEADSET_CONNECTED":
+            case "DATA_SYNCING": case "PAIR_SUCCESS":
+                MAIN.post(() -> onConnection(device, true)); break;
+            case "DISCONNECTED": case "TWS_DISCONNECTED": case "HEADSET_DISCONNECTED":
+            case "CONNECT_FAIL": case "CONNECT_TIME_OUT": case "DEVICE_POWER_OFF":
+            case "DEVICE_UNBIND": case "BREAK":
+                MAIN.post(() -> onConnection(device, false)); break;
+            default: break;
+        }
     }
 
     /** Worker-thread lookup using realme Link's own account/device database, not a fabricated device. */
@@ -257,7 +266,26 @@ public final class ModeKeeper {
         } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
             Log.w(TAG, "Control connection not ready", e);
         }
-        onBluetoothEvent(address, true);
+        // Do not lose the DB-resolved device if the live ACL hint was deduplicated.
+        onDeviceReady(device);
+    }
+
+    public static boolean hasPendingChecks(String raw) {
+        String address = normalize(raw);
+        if (address == null) return false;
+        synchronized (CHECKS) {
+            for (String mode : MODES) {
+                Check check = CHECKS.get(preferenceId(address, mode));
+                if (check != null && !check.done) return true;
+            }
+        }
+        return false;
+    }
+
+    public static void cancelPendingChecks(String raw) {
+        String address = normalize(raw);
+        if (address == null) return;
+        for (String mode : MODES) cancel(preferenceId(address, mode));
     }
 
     private static void rememberDevice(Object device) {
@@ -321,7 +349,7 @@ public final class ModeKeeper {
         final String id;
         int round, ticket;
         boolean waiting, wrote;
-        Object callback;
+        volatile Object callback;
         volatile boolean done;
         long finishedAt;
         Check(Object device, Desired want) {
@@ -342,8 +370,8 @@ public final class ModeKeeper {
         if (address == null) return;
         rememberDevice(device);
         if (!connected) {
-            cancel(preferenceId(address, "anc"));
-            cancel(preferenceId(address, "game"));
+            cancelPendingChecks(address);
+            synchronized (DEVICES) { LAST_ACL.remove(address); }
         } else {
             onDeviceReady(device);
         }
@@ -395,9 +423,16 @@ public final class ModeKeeper {
             if (CHECKS.get(check.id) != check || check.done) return false;
         }
         Desired latest = load(check.want.mac, check.want.mode);
-        return isMaintained(check.device, check.want.mode) &&
+        boolean valid = isMaintained(check.device, check.want.mode) &&
             latest != null && latest.type == check.want.type && latest.key == check.want.key &&
             latest.value == check.want.value && check.want.mac.equals(mac(check.device));
+        if (!valid) {
+            synchronized (CHECKS) {
+                if (CHECKS.get(check.id) == check) CHECKS.remove(check.id);
+                check.callback = null;
+            }
+        }
+        return valid;
     }
 
     private static void startRound(Check check) {
@@ -442,13 +477,18 @@ public final class ModeKeeper {
                     if (args != null && args.length == 3 && args[1] instanceof Integer &&
                             check.want.mac.equals(mac(args[0]))) {
                         int code = (Integer) args[1];
-                        Object info = args[2];
-                        MAIN.post(() -> handleReply(check, ticket, verifyOnly, code, info));
+                        // Snapshot the vendor reply before posting; never retain a mutable
+                        // SettingsInfo/list from the vendor callback thread.
+                        int value = replyValue(check.want, args[2]);
+                        MAIN.post(() -> handleReply(check, ticket, verifyOnly, code, value));
                     }
                     return null;
                 });
             // Vendor proxy stores a WeakReference; keep this request alive until completion.
-            check.callback = cb;
+            synchronized (CHECKS) {
+                if (CHECKS.get(check.id) != check) return;
+                check.callback = cb;
+            }
             query.invoke(manager, check.device, check.want.type, check.want.key, cb);
             MAIN.postDelayed(() -> {
                 if (current(check) && check.waiting && check.ticket == ticket) finishRound(check);
@@ -459,16 +499,25 @@ public final class ModeKeeper {
         }
     }
 
-    private static void handleReply(Check check, int ticket, boolean verifyOnly, int code, Object info) {
+    private static int replyValue(Desired want, Object info) {
+        try {
+            if (!(info instanceof Iterable<?>)) return readValue(want, info);
+            int found = -1;
+            for (Object element : (Iterable<?>) info) {
+                int value = readValue(want, element);
+                if (value < 0) continue;
+                if (found >= 0 && value != found) return -1; // conflicting reply
+                found = value;
+            }
+            return found;
+        } catch (RuntimeException e) {
+            return -1;
+        }
+    }
+
+    private static void handleReply(Check check, int ticket, boolean verifyOnly, int code, int value) {
         if (!current(check) || !check.waiting || ticket != check.ticket) return;
         if (code != 0) { finishRound(check); return; }
-        int value = -1;
-        if (info instanceof Iterable<?>) {
-            for (Object element : (Iterable<?>) info) {
-                value = readValue(check.want, element);
-                if (value >= 0) break;
-            }
-        } else value = readValue(check.want, info);
         if (value < 0) return; // Wait for a valid response; never write from an unknown state.
         check.waiting = false;
         check.callback = null;
@@ -501,8 +550,10 @@ public final class ModeKeeper {
             Constructor<?> ctor = infoClass.getConstructor(int.class, int.class, int.class);
             Object info = ctor.newInstance(want.type, want.key, want.value);
             check.wrote = true;
-            if (!current(check)) return;
-            send.invoke(manager, check.device, info, null);
+            synchronized (CHECKS) {
+                if (!current(check)) return;
+                send.invoke(manager, check.device, info, null);
+            }
             log("restore sent " + want.mode + "=" + want.value);
             MAIN.postDelayed(() -> queryActual(check, true), 1600L);
         } catch (Throwable ex) {

@@ -260,55 +260,78 @@ public final class ModeSettingsUi {
     public static final class ReconnectJob extends JobService {
         private final Handler main = new Handler(Looper.getMainLooper());
         private final Map<Integer, Work> jobs = new HashMap<>();
+        private static final long[] LOOKUP_DELAYS = {0, 1000, 2000, 4000};
         private static final class Work {
             final JobParameters params;
+            final String address;
+            final long started = SystemClock.elapsedRealtime();
             Thread worker;
-            Runnable timeout;
-            Work(JobParameters params) { this.params = params; }
+            Runnable timeout, poll;
+            Work(JobParameters params, String address) { this.params = params; this.address = address; }
         }
         @Override public boolean onStartJob(JobParameters params) {
             String address = params.getExtras().getString("address");
             long age = SystemClock.elapsedRealtime() - params.getExtras().getLong("eventAt", -1);
             if (age < 0 || age > 30000L || !ModeKeeper.activeProfile(address)) return false;
-            if (jobs.containsKey(params.getJobId())) return false;
-            Work work = new Work(params);
+            if (jobs.containsKey(params.getJobId()) || jobs.size() >= 8) return false;
+            Work work = new Work(params, address);
             jobs.put(params.getJobId(), work);
-            work.timeout = () -> finish(work);
+            work.timeout = () -> finish(work, true);
+            work.poll = () -> poll(work);
             work.worker = new Thread(() -> {
-                Object device = ModeKeeper.resolveSavedDevice(address);
+                Object device = null;
+                for (long delay : LOOKUP_DELAYS) {
+                    try {
+                        if (delay > 0) Thread.sleep(delay);
+                        if (Thread.currentThread().isInterrupted() || !ModeKeeper.activeProfile(address)) return;
+                        device = ModeKeeper.resolveSavedDevice(address);
+                        if (device != null) break;
+                    } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                    catch (RuntimeException e) { android.util.Log.w(TAG, "Headset lookup failed", e); }
+                }
+                final Object resolved = device;
                 main.post(() -> {
-                    if (jobs.get(params.getJobId()) != work) return;
-                    if (device == null || !ModeKeeper.activeProfile(address)) {
-                        finish(work);
+                    if (!current(work)) return;
+                    if (resolved == null || !ModeKeeper.activeProfile(address)) {
+                        finish(work, false);
                         return;
                     }
-                    ModeKeeper.resumeSavedDevice(device);
+                    ModeKeeper.resumeSavedDevice(resolved);
+                    main.postDelayed(work.poll, 1000L);
                 });
             }, "RLM-device-lookup");
-            main.postDelayed(work.timeout, 35000L);
+            main.postDelayed(work.timeout, 45000L);
             work.worker.start();
             return true;
         }
-        private void finish(Work work) {
-            if (jobs.get(work.params.getJobId()) != work) return;
-            jobs.remove(work.params.getJobId());
+        private boolean current(Work work) { return jobs.get(work.params.getJobId()) == work; }
+        private void poll(Work work) {
+            if (!current(work)) return;
+            if (!ModeKeeper.activeProfile(work.address) || !ModeKeeper.hasPendingChecks(work.address)) {
+                finish(work, false);
+            } else {
+                main.postDelayed(work.poll, 1000L);
+            }
+        }
+        private void clear(Work work) {
             main.removeCallbacks(work.timeout);
+            main.removeCallbacks(work.poll);
             work.worker.interrupt();
+        }
+        private void finish(Work work, boolean timedOut) {
+            if (!current(work)) return;
+            jobs.remove(work.params.getJobId());
+            clear(work);
+            if (timedOut) android.util.Log.w(TAG, "Reconnect job reached its deadline");
             jobFinished(work.params, false);
         }
         @Override public boolean onStopJob(JobParameters params) {
             Work work = jobs.remove(params.getJobId());
-            if (work != null) {
-                main.removeCallbacks(work.timeout);
-                work.worker.interrupt();
-            }
+            if (work != null) clear(work);
             return false;
         }
         @Override public void onDestroy() {
-            for (Work work : jobs.values()) {
-                main.removeCallbacks(work.timeout);
-                work.worker.interrupt();
-            }
+            for (Work work : jobs.values()) clear(work);
             jobs.clear();
             super.onDestroy();
         }
