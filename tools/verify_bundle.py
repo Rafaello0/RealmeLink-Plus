@@ -47,6 +47,7 @@ with zipfile.ZipFile(args.mpp) as z:
     fields=dict(re.findall(r"(?m)^([A-Za-z-]+): ([^\r\n]*)",mf))
     assert fields.get("Name")=="RealmeLink Plus", fields
     assert fields.get("Version")==os.environ.get("REALMELINK_RELEASE_VERSION", "0.3.0"), fields
+    assert fields.get("Description", "").startswith("Five realme Link"), fields
     assert fields.get("Source")=="https://github.com/Rafaello0/RealmeLink-Plus", fields
     assert "Patcher-Version" in fields, fields
     required={
@@ -59,6 +60,8 @@ with zipfile.ZipFile(args.mpp) as z:
         "NOTICE",
     }
     assert not (required-names), f"Missing: {required-names}"
+    if b"experimentalSingleTapPatch" in z.read("app/morphe/patches/realmelink/modes/ModeMemoryPatchesKt.class"):
+        raise SystemExit("Unsupported experimental single-tap injection still packaged")
     for name in names:
         if name.startswith("app/morphe/patches/") and name.endswith(".class"):
             rel=name.removeprefix("app/morphe/patches/")
@@ -67,7 +70,7 @@ with zipfile.ZipFile(args.mpp) as z:
     prefix = "Lapp/hxreborn/extension/realmelink/"
     runtime = dex_classes(z.read("extensions/extension.mpe"))
     expected_runtime = {prefix + name + ";" for name in (
-        "ModeKeeper", "ModeSettingsUi", "ModeSettingsUi$PresenceService",
+        "ModeKeeper", "HeadsetProfileNames", "ModeSettingsUi", "ModeSettingsUi$PresenceService",
         "ModeSettingsUi$ReconnectReceiver", "ModeSettingsUi$ReconnectJob",
     )}
     if expected_runtime - runtime:

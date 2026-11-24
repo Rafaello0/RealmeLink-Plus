@@ -139,3 +139,5 @@ The previously added optional experimental Single Tap patch was removed: realme 
 - Mode-settings entry moved from navigation bottom to upper-right, below the headset title area.
 - Headset selection uses the Android Bluetooth alias/name or the realme vendor device name cached per profile; **never displays a MAC**. Duplicate names receive numbered suffixes; unknown names use localized generic labels.
 - Physical device behavior and visual position still need verification after patching an original APK. Compatibility tested by CI compilation and Java simulation, not an over-the-air firmware change.
+
+BUILD029 consistency: Morphe bundle manifest declares **five** patches and CI verifies HeadsetProfileNames runtime class and absence of unsupported experimental single-tap injection.
