@@ -6,11 +6,21 @@ package app.hxreborn.extension.realmelink;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Application;
+import android.app.job.JobInfo;
+import android.app.job.JobParameters;
+import android.app.job.JobScheduler;
+import android.app.job.JobService;
+import android.content.ComponentName;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PersistableBundle;
+import android.os.SystemClock;
+import java.util.HashMap;
+import java.util.Map;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -48,29 +58,106 @@ public final class ModeSettingsUi {
             @Override public void onActivitySaveInstanceState(Activity a, Bundle b) {}
             @Override public void onActivityDestroyed(Activity a) {}
         });
-        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED);
-        filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
-        BroadcastReceiver receiver = new BroadcastReceiver() {
-            @Override public void onReceive(Context ignored, Intent intent) {
-                if (intent == null) return;
-                String action = intent.getAction();
-                if (!BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)
-                        && !BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) return;
-                try {
-                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                    if (device != null) ModeKeeper.onBluetoothEvent(device.getAddress(),
-                        BluetoothDevice.ACTION_ACL_CONNECTED.equals(action));
-                } catch (RuntimeException e) {
-                    android.util.Log.w(TAG, "Bluetooth event unavailable", e);
+    }
+
+    /** Manifest receiver can wake a normally killed app; force-stop remains an OS restriction. */
+    public static final class ReconnectReceiver extends BroadcastReceiver {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String action = intent.getAction();
+            if (!BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)
+                    && !BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) return;
+            try {
+                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice.class);
+                if (device == null) return;
+                String address = device.getAddress();
+                if (!ModeKeeper.activeProfile(address)) return;
+                JobScheduler scheduler = context.getSystemService(JobScheduler.class);
+                if (scheduler == null) return;
+                ComponentName service = new ComponentName(context, ReconnectJob.class);
+                int id = 0x52000000 | (address.hashCode() & 0x00ffffff);
+                JobInfo old = scheduler.getPendingJob(id);
+                if (old != null && (!service.equals(old.getService())
+                        || !address.equals(old.getExtras().getString("address")))) {
+                    android.util.Log.w(TAG, "Reconnect job ID collision");
+                    return;
                 }
+                if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
+                    if (old != null) scheduler.cancel(id);
+                    ModeKeeper.onBluetoothEvent(address, false);
+                    return;
+                }
+                if (old != null) return; // duplicate ACL event
+                PersistableBundle extras = new PersistableBundle();
+                extras.putString("address", address);
+                extras.putLong("eventAt", SystemClock.elapsedRealtime());
+                JobInfo job = new JobInfo.Builder(id, service).setExtras(extras)
+                    .setMinimumLatency(0).setOverrideDeadline(10000L).build();
+                if (scheduler.schedule(job) != JobScheduler.RESULT_SUCCESS)
+                    android.util.Log.w(TAG, "Could not schedule headset reconnect");
+                // Live-process path remains useful even if the scheduler is delayed.
+                ModeKeeper.onBluetoothEvent(address, true);
+            } catch (RuntimeException e) {
+                android.util.Log.w(TAG, "Bluetooth reconnect unavailable", e);
             }
-        };
-        try {
-            if (Build.VERSION.SDK_INT >= 33)
-                app.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
-            else app.registerReceiver(receiver, filter);
-        } catch (RuntimeException e) {
-            android.util.Log.w(TAG, "Bluetooth listener unavailable; vendor hooks remain active", e);
+        }
+    }
+
+    /** Short bounded JobService keeps cold-start work alive beyond receiver lifetime. */
+    public static final class ReconnectJob extends JobService {
+        private final Handler main = new Handler(Looper.getMainLooper());
+        private final Map<Integer, Work> jobs = new HashMap<>();
+        private static final class Work {
+            final JobParameters params;
+            Thread worker;
+            Runnable timeout;
+            Work(JobParameters params) { this.params = params; }
+        }
+        @Override public boolean onStartJob(JobParameters params) {
+            String address = params.getExtras().getString("address");
+            long age = SystemClock.elapsedRealtime() - params.getExtras().getLong("eventAt", -1);
+            if (age < 0 || age > 30000L || !ModeKeeper.activeProfile(address)) return false;
+            if (jobs.containsKey(params.getJobId())) return false;
+            Work work = new Work(params);
+            jobs.put(params.getJobId(), work);
+            work.timeout = () -> finish(work);
+            work.worker = new Thread(() -> {
+                Object device = ModeKeeper.resolveSavedDevice(address);
+                main.post(() -> {
+                    if (jobs.get(params.getJobId()) != work) return;
+                    if (device == null || !ModeKeeper.activeProfile(address)) {
+                        finish(work);
+                        return;
+                    }
+                    ModeKeeper.resumeSavedDevice(device);
+                });
+            }, "RLM-device-lookup");
+            main.postDelayed(work.timeout, 35000L);
+            work.worker.start();
+            return true;
+        }
+        private void finish(Work work) {
+            if (jobs.get(work.params.getJobId()) != work) return;
+            jobs.remove(work.params.getJobId());
+            main.removeCallbacks(work.timeout);
+            work.worker.interrupt();
+            jobFinished(work.params, false);
+        }
+        @Override public boolean onStopJob(JobParameters params) {
+            Work work = jobs.remove(params.getJobId());
+            if (work != null) {
+                main.removeCallbacks(work.timeout);
+                work.worker.interrupt();
+            }
+            return false;
+        }
+        @Override public void onDestroy() {
+            for (Work work : jobs.values()) {
+                main.removeCallbacks(work.timeout);
+                work.worker.interrupt();
+            }
+            jobs.clear();
+            super.onDestroy();
         }
     }
 

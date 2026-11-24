@@ -8,6 +8,8 @@ package app.morphe.patches.realmelink.modes
 import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
 import app.morphe.patcher.patch.bytecodePatch
+import app.morphe.patcher.patch.resourcePatch
+import org.w3c.dom.Element
 import app.morphe.patcher.util.matchSingle
 import app.morphe.patches.shared.compat.AppCompatibilities
 
@@ -54,9 +56,53 @@ private object AlternateToggleClick : Fingerprint(
     name = "X9", returnType = "V", parameters = listOf("Landroid/view/View;", "Lcom/realme/iot/headset/model/SwitcherTwoTextItemInfo;"),
 )
 
+// Global callback and manifest components verified against the target APK.
+private object GlobalStatus : Fingerprint(
+    definingClass = "Lcom/realme/iot/headset/manager/CallbackManager;",
+    name = "O", returnType = "V",
+    parameters = listOf(DEVICE, "Lcom/realme/iot/common/devices/ConnectStatus;"),
+)
+private val reconnectManifest = resourcePatch {
+    compatibleWith(AppCompatibilities.REALME_LINK)
+    execute {
+        document("AndroidManifest.xml").use { doc ->
+            val application = doc.getElementsByTagName("application").item(0) as? Element
+                ?: error("Missing realme Link application node")
+            val prefix = "app.hxreborn.extension.realmelink.ModeSettingsUi"
+            val receiverName = prefix + "$" + "ReconnectReceiver"
+            val serviceName = prefix + "$" + "ReconnectJob"
+            val existing = application.childNodes
+            for (i in 0 until existing.length) {
+                val e = existing.item(i) as? Element ?: continue
+                check(e.getAttribute("android:name") != receiverName &&
+                    e.getAttribute("android:name") != serviceName) { "Duplicate reconnect component" }
+            }
+            val receiver = doc.createElement("receiver")
+            receiver.setAttribute("android:name", receiverName)
+            receiver.setAttribute("android:exported", "true")
+            receiver.setAttribute("android:permission", "android.permission.BLUETOOTH_CONNECT")
+            val filter = doc.createElement("intent-filter")
+            for (action in listOf("android.bluetooth.device.action.ACL_CONNECTED",
+                "android.bluetooth.device.action.ACL_DISCONNECTED")) {
+                val node = doc.createElement("action")
+                node.setAttribute("android:name", action)
+                filter.appendChild(node)
+            }
+            receiver.appendChild(filter)
+            application.appendChild(receiver)
+            val service = doc.createElement("service")
+            service.setAttribute("android:name", serviceName)
+            service.setAttribute("android:exported", "true")
+            service.setAttribute("android:permission", "android.permission.BIND_JOB_SERVICE")
+            application.appendChild(service)
+        }
+    }
+}
+
 // One shared hook prevents double-writing and keeps ANC and Game Mode independently selectable.
 private val modeMemoryInfrastructure = bytecodePatch {
     compatibleWith(AppCompatibilities.REALME_LINK)
+    dependsOn(reconnectManifest)
     extendWith("extensions/extension.mpe")
 
     execute {
@@ -71,6 +117,9 @@ private val modeMemoryInfrastructure = bytecodePatch {
         )
         DeviceInit.matchSingle().method.addInstructions(
             0, "invoke-static { p1 }, $EXT->onDeviceReady(Ljava/lang/Object;)V",
+        )
+        GlobalStatus.matchSingle().method.addInstructions(
+            0, "invoke-static { p0, p1 }, $EXT->onVendorStatus(Ljava/lang/Object;Ljava/lang/Object;)V",
         )
     }
 }

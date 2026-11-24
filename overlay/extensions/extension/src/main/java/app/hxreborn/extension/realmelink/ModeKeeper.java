@@ -195,6 +195,68 @@ public final class ModeKeeper {
 
     public static boolean modeAvailable(String mode) { return isModeEnabled(mode); }
 
+    public static boolean activeProfile(String raw) {
+        String address = normalize(raw);
+        return address != null && ((hasSelectionFor(address, "anc") && isMaintainedFor(address, "anc"))
+            || (hasSelectionFor(address, "game") && isMaintainedFor(address, "game")));
+    }
+
+    /** Global callback dispatcher in the verified app DEX, independent of presenter lifetime. */
+    public static void onVendorStatus(Object device, Object status) {
+        if (!(status instanceof Enum<?>) || mac(device) == null) return;
+        String name = ((Enum<?>)status).name();
+        if ("CONNECTED".equals(name) || "TWS_CONNECTED".equals(name))
+            MAIN.post(() -> onConnection(device, true));
+        else if ("DISCONNECTED".equals(name) || "TWS_DISCONNECTED".equals(name))
+            MAIN.post(() -> onConnection(device, false));
+    }
+
+    /** Worker-thread lookup using realme Link's own account/device database, not a fabricated device. */
+    public static Object resolveSavedDevice(String raw) {
+        String address = normalize(raw);
+        Context c = context;
+        if (c == null || !activeProfile(address)) return null;
+        Object known = knownDevice(address);
+        if (known != null) return known;
+        try {
+            ClassLoader loader = c.getClassLoader();
+            Class<?> helper = Class.forName("com.realme.iot.common.db.data.devicedomain.DeviceDomainDataSourceHelper", false, loader);
+            Class<?> domain = Class.forName("com.realme.iot.common.domain.DeviceDomain", false, loader);
+            Class<?> util = Class.forName("com.realme.iot.common.utils.Util", false, loader);
+            String formatted = address.replaceAll("(?<=\\G..)(?!$)", ":");
+            Object db = helper.getMethod("S").invoke(null);
+            if (db == null) return null;
+            Object record = helper.getMethod("R", String.class).invoke(db, formatted);
+            if (record == null) return null;
+            Object device = util.getMethod("s", domain).invoke(null, record);
+            if (!address.equals(mac(device))) return null;
+            Object kind = device.getClass().getMethod("getDeviceType").invoke(device);
+            if (!(kind instanceof Enum<?>) || !"HEADSET".equals(((Enum<?>)kind).name())) return null;
+            return device;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            Log.w(TAG, "Cannot resolve saved headset", e);
+            return null;
+        }
+    }
+
+    /** Called on main after a fresh OS connection event and exact database lookup. */
+    public static void resumeSavedDevice(Object device) {
+        String address = mac(device);
+        if (!activeProfile(address)) return;
+        rememberDevice(device);
+        // Ask vendor API for its control connection, only for an opted-in known headset.
+        try {
+            Object manager = getManager();
+            if (manager != null && !isConnected(manager, device)) {
+                Class<?> dev = Class.forName("com.realme.iot.common.devices.Device", false, manager.getClass().getClassLoader());
+                if (dev.isInstance(device)) manager.getClass().getMethod("connectDevice", dev).invoke(manager, device);
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            Log.w(TAG, "Control connection not ready", e);
+        }
+        onBluetoothEvent(address, true);
+    }
+
     private static void rememberDevice(Object device) {
         String address = mac(device);
         if (address == null) return;
@@ -256,6 +318,7 @@ public final class ModeKeeper {
         final String id;
         int round, ticket;
         boolean waiting, wrote;
+        Object callback;
         volatile boolean done;
         long finishedAt;
         Check(Object device, Desired want) {
@@ -265,7 +328,10 @@ public final class ModeKeeper {
     }
 
     private static void cancel(String id) {
-        synchronized (CHECKS) { CHECKS.remove(id); }
+        synchronized (CHECKS) {
+            Check previous = CHECKS.remove(id);
+            if (previous != null) previous.callback = null;
+        }
     }
 
     public static void onConnection(Object device, boolean connected) {
@@ -340,6 +406,7 @@ public final class ModeKeeper {
     private static void finishRound(Check check) {
         if (!current(check)) return;
         check.waiting = false;
+        check.callback = null;
         if (++check.round >= CHECK_DELAYS_MS.length) {
             check.device = null; // A completed check must not retain the vendor Device.
             check.finishedAt = SystemClock.uptimeMillis();
@@ -377,6 +444,8 @@ public final class ModeKeeper {
                     }
                     return null;
                 });
+            // Vendor proxy stores a WeakReference; keep this request alive until completion.
+            check.callback = cb;
             query.invoke(manager, check.device, check.want.type, check.want.key, cb);
             MAIN.postDelayed(() -> {
                 if (current(check) && check.waiting && check.ticket == ticket) finishRound(check);
@@ -399,6 +468,7 @@ public final class ModeKeeper {
         } else value = readValue(check.want, info);
         if (value < 0) return; // Wait for a valid response; never write from an unknown state.
         check.waiting = false;
+        check.callback = null;
         if (value == check.want.value) {
             log((verifyOnly ? "verified " : "already correct ") + check.want.mode + "=" + value);
             finishRound(check);

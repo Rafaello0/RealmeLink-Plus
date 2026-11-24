@@ -6,6 +6,7 @@ import com.realme.iot.headset.activity.device.HeadsetDeviceActivity;
 import com.realme.iot.headset.manager.HeadsetManager;
 import com.realme.iot.headset.manager.HeadsetManagerProxy;
 public class SmokeTest {
+ private enum Status { CONNECTED, DISCONNECTED, CONNECTING }
  private static void check(boolean v,String text){if(!v)throw new IllegalStateException(text);}
  public static void main(String[] args){
   HeadsetDeviceActivity a=new HeadsetDeviceActivity();
@@ -77,6 +78,18 @@ public class SmokeTest {
   Handler.drain();
   check(m.writes==before,"unknown ACL and disconnect do not write");
   check(!ModeKeeper.setMaintainedFor("00:11:22:33:44:5Z","anc",true),"invalid address rejected");
+  check(ModeKeeper.activeProfile("00:11:22:33:44:55"),"active profile");
+  check(!ModeKeeper.activeProfile("00:11:22:33:44:56"),"unknown profile");
+  ModeKeeper.onVendorStatus(bud, Status.DISCONNECTED);
+  Handler.drain();
+  m.actual.put("001122334455:2:0",0);
+  ModeKeeper.onVendorStatus(bud, Status.CONNECTED);
+  Handler.drain();
+  check(m.actual.get("001122334455:2:0")==1,"global status restores without presenter");
+  before=m.writes;
+  ModeKeeper.onVendorStatus(bud, Status.CONNECTING);
+  Handler.drain();
+  check(m.writes==before,"intermediate status ignored");
   System.out.println("SMOKE PASS: saved modes, read-before-write, verify, cooldown, unknown rows");
  }
 }
