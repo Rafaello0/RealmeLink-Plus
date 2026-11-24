@@ -16,6 +16,7 @@ public class FakeContext extends Context {
    public Editor putInt(String key,int val){values.put(key,val);return this;}
    public Editor putBoolean(String key,boolean val){values.put(key,val);return this;}
    public boolean commit(){return true;}
+   public void apply(){commit();}
   };}
  }
 }

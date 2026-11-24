@@ -7,5 +7,6 @@ public interface SharedPreferences {
   Editor putInt(String key,int value);
   Editor putBoolean(String key,boolean value);
   boolean commit();
+  void apply();
  }
 }

@@ -79,8 +79,9 @@ public final class ModeKeeper {
 
     /** Only called by the UI event handlers from the exact verified APK version. */
     public static void markUiAction(Object activity, Object item) {
+        ACTION.remove();
         if (!(activity instanceof Context) || item == null) return;
-        if (context == null) initialize(activity);
+        if (context == null) return;
         String category = classifyItem((Context) activity, item);
         if (("anc".equals(category) && noiseEnabled) ||
                 ("game".equals(category) && gameEnabled)) {
@@ -110,33 +111,36 @@ public final class ModeKeeper {
         // Learn the exact mode encoding from the verified UI write, not a guessed boolean.
         if (value < 0) return;
         String id = preferenceId(mac, tag.type);
-        boolean stored = c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
+        cancel(id);
+        c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
             .putInt(id + ".type", type)
             .putInt(id + ".key", key)
             .putInt(id + ".value", value)
             .putBoolean(id + ".valid", true)
-            .commit();
-        if (stored) {
-            cancel(id);
+            .apply();
+        MAIN.post(() -> {
             Context ui = tag.ui.get();
-            if (ui != null) MAIN.post(() -> ModeSettingsUi.attach(ui, device));
-            log("remembered " + tag.type + " type=" + type + " key=" + key + " value=" + value);
-        } else {
-            Log.w(TAG, "Failed to persist manual selection");
-        }
+            if (ui != null) ModeSettingsUi.attach(ui, device);
+        });
+        log("remembered " + tag.type + " type=" + type + " key=" + key + " value=" + value);
     }
 
     /** Only the captured device identity is used; two identical models never share preferences. */
     public static boolean hasSelection(Object device, String mode) {
         String address = mac(device);
-        return address != null && load(address, mode) != null;
+        return address != null && isModeEnabled(mode) && load(address, mode) != null;
     }
 
     public static boolean isMaintained(Object device, String mode) {
         String address = mac(device);
         if (address == null || context == null || !isModeEnabled(mode)) return false;
-        return context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
-            .getBoolean(preferenceId(address, mode) + ".maintain", true);
+        try {
+            return context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
+                .getBoolean(preferenceId(address, mode) + ".maintain", true);
+        } catch (ClassCastException ex) {
+            Log.w(TAG, "Invalid maintenance preference", ex);
+            return false;
+        }
     }
 
     public static boolean setMaintained(Object device, String mode, boolean enabled) {
@@ -144,13 +148,11 @@ public final class ModeKeeper {
         Context c = context;
         if (address == null || c == null || !isModeEnabled(mode) || !hasSelection(device, mode)) return false;
         String id = preferenceId(address, mode);
-        boolean saved = c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
-            .putBoolean(id + ".maintain", enabled).commit();
-        if (saved) {
-            cancel(id);
-            if (enabled) scheduleCheck(device, mode);
-        }
-        return saved;
+        cancel(id);
+        c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
+            .putBoolean(id + ".maintain", enabled).apply();
+        if (enabled) scheduleCheck(device, mode);
+        return true;
     }
 
     public static String deviceIdentity(Object device) {
@@ -163,11 +165,13 @@ public final class ModeKeeper {
     }
 
     private static final class Check {
-        final Object device;
+        Object device;
         final Desired want;
         final String id;
         int round, ticket;
-        boolean waiting, done, wrote;
+        boolean waiting, wrote;
+        volatile boolean done;
+        long finishedAt;
         Check(Object device, Desired want) {
             this.device = device; this.want = want;
             this.id = preferenceId(want.mac, want.mode);
@@ -202,6 +206,10 @@ public final class ModeKeeper {
         if (want == null) return;
         Check check = new Check(device, want);
         synchronized (CHECKS) {
+            // Release completed session markers and allow a later readiness event
+            // to recover even if the vendor omitted a disconnect callback.
+            long now = SystemClock.uptimeMillis();
+            CHECKS.values().removeIf(previous -> previous.done && now - previous.finishedAt >= 30000L);
             if (CHECKS.containsKey(check.id)) return;
             CHECKS.put(check.id, check);
         }
@@ -213,11 +221,16 @@ public final class ModeKeeper {
         if (c == null) return null;
         SharedPreferences p = c.getSharedPreferences(STORE, Context.MODE_PRIVATE);
         String id = preferenceId(mac, mode);
-        if (!p.getBoolean(id + ".valid", false)) return null;
-        int type = p.getInt(id + ".type", -1);
-        int key = p.getInt(id + ".key", -1);
-        int value = p.getInt(id + ".value", -1);
-        return type < 0 || key < 0 || value < 0 ? null : new Desired(mode, mac, type, key, value);
+        try {
+            if (!p.getBoolean(id + ".valid", false)) return null;
+            int type = p.getInt(id + ".type", -1);
+            int key = p.getInt(id + ".key", -1);
+            int value = p.getInt(id + ".value", -1);
+            return type < 0 || key < 0 || value < 0 ? null : new Desired(mode, mac, type, key, value);
+        } catch (ClassCastException ex) {
+            Log.w(TAG, "Invalid stored mode", ex);
+            return null;
+        }
     }
 
     private static boolean current(Check check) {
@@ -240,7 +253,9 @@ public final class ModeKeeper {
         if (!current(check)) return;
         check.waiting = false;
         if (++check.round >= CHECK_DELAYS_MS.length) {
-            check.done = true; // Keep the session marker until disconnect or manual change.
+            check.device = null; // A completed check must not retain the vendor Device.
+            check.finishedAt = SystemClock.uptimeMillis();
+            check.done = true;
             return;
         }
         MAIN.postDelayed(() -> startRound(check), CHECK_DELAYS_MS[check.round]);
@@ -255,7 +270,7 @@ public final class ModeKeeper {
             if (manager == null || !isConnected(manager, check.device)) {
                 finishRound(check); return;
             }
-            Method query = findMethod(manager.getClass(), "x", 4);
+            Method query = contractMethod(manager, "x", check.device, true);
             if (query == null || !query.getParameterTypes()[3].isInterface()) {
                 finishRound(check); return;
             }
@@ -319,12 +334,13 @@ public final class ModeKeeper {
         try {
             Object manager = getManager();
             if (manager == null || !isConnected(manager, check.device)) { finishRound(check); return; }
-            Method send = findMethod(manager.getClass(), "J3", 3);
+            Method send = contractMethod(manager, "J3", check.device, false);
             if (send == null) { finishRound(check); return; }
             Class<?> infoClass = Class.forName(SETTING, false, manager.getClass().getClassLoader());
             Constructor<?> ctor = infoClass.getConstructor(int.class, int.class, int.class);
             Object info = ctor.newInstance(want.type, want.key, want.value);
             check.wrote = true;
+            if (!current(check)) return;
             send.invoke(manager, check.device, info, null);
             log("restore sent " + want.mode + "=" + want.value);
             MAIN.postDelayed(() -> queryActual(check, true), 1600L);
@@ -346,6 +362,16 @@ public final class ModeKeeper {
         if (c == null) return null;
         Class<?> type = Class.forName(MANAGER, false, c.getClassLoader());
         return type.getMethod("getInstance").invoke(null);
+    }
+
+    private static Method contractMethod(Object manager, String name, Object device, boolean query)
+            throws ReflectiveOperationException {
+        ClassLoader loader = manager.getClass().getClassLoader();
+        Class<?> dev = Class.forName("com.realme.iot.common.devices.Device", false, loader);
+        Class<?> cb = Class.forName("com.realme.iot.headset.contract.callback.ISettingsCallback", false, loader);
+        if (!dev.isInstance(device)) return null;
+        return query ? manager.getClass().getMethod(name, dev, int.class, int.class, cb)
+            : manager.getClass().getMethod(name, dev, Class.forName(SETTING, false, loader), cb);
     }
 
     private static Method findMethod(Class<?> cls, String name, int argCount) {
@@ -371,7 +397,8 @@ public final class ModeKeeper {
             Object m = device.getClass().getMethod("getMac").invoke(device);
             if (!(m instanceof String) || ((String) m).isEmpty()) return null;
             String address = ((String) m).replace(":", "").replace("-", "").toUpperCase(Locale.ROOT);
-            return address.matches("[0-9A-F]{12}") ? address : null;
+            return address.matches("[0-9A-F]{12}") && !address.equals("000000000000")
+                && !address.equals("FFFFFFFFFFFF") && !address.equals("020000000000") ? address : null;
         } catch (Throwable ex) { return null; }
     }
 

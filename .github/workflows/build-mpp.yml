@@ -49,6 +49,9 @@ jobs:
           set -euo pipefail
           python3 tools/test_runtime_java.py
 
+      - name: Test upstream overlay retention
+        run: python3 tools/test_prepare_upstream.py
+
       - name: Validate source tree
         shell: bash
         run: |
