@@ -69,6 +69,10 @@ jobs:
           test -s overlay/extensions/extension/src/main/java/app/hxreborn/extension/realmelink/ModeKeeper.java
           grep -Fq 'Remember noise control mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
           grep -Fq 'Remember game mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
+          ! grep -Fq 'Expose single tap (experimental)' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
+          test -s overlay/extensions/extension/src/main/java/app/hxreborn/extension/realmelink/HeadsetProfileNames.java
+          grep -Fq 'Gravity.TOP | Gravity.END' overlay/extensions/extension/src/main/java/app/hxreborn/extension/realmelink/ModeSettingsUi.java
+          grep -Fq 'HeadsetProfileNames.labels' overlay/extensions/extension/src/main/java/app/hxreborn/extension/realmelink/ModeSettingsUi.java
 
       - name: Validate home-screen patch source
         shell: bash

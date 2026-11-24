@@ -123,7 +123,8 @@ public class SmokeTest {
   check(m.writes==before,"transport-only event not treated as ready");
   ModeKeeper.onVendorStatus(bud,Status.DATA_SYNCING);Handler.drain();
   check(m.actual.get("001122334455:2:0")==1,"data-syncing readiness with verified query");
-  GestureTest.run();
+  check("realme Buds Air7".equals(ModeKeeper.savedProfileName("00:11:22:33:44:55")), "vendor name persisted by profile");
+  ProfileNameTest.run();
   System.out.println("SMOKE PASS: saved modes, read-before-write, verify, cooldown, unknown rows");
  }
 }

@@ -34,6 +34,8 @@ import android.os.SystemClock;
 import java.util.HashMap;
 import java.util.Map;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothAdapter;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -355,14 +357,21 @@ public final class ModeSettingsUi {
             if (button == null) {
                 button = new Button(a);
                 button.setTag(BUTTON_TAG);
-                button.setText(title());
-                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM | Gravity.END);
-                int margin = (int)(12 * a.getResources().getDisplayMetrics().density);
-                lp.setMargins(margin, margin, margin, margin);
-                root.addView(button, lp);
+                root.addView(button);
             }
+            button.setText(title());
+            button.setAllCaps(false);
+            button.setTextSize(12f);
+            float density = a.getResources().getDisplayMetrics().density;
+            // Place just below the headset toolbar, not over Android navigation.
+            // Reapply on every resume, including an existing overlay from this Activity.
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.END);
+            int side = (int)(12 * density);
+            lp.setMargins(side, (int)(64 * density), side, 0);
+            button.setLayoutParams(lp);
+            button.setElevation(8 * density);
             // Never bind a newly opened screen to whichever headset connected last.
             button.setOnClickListener(v -> showProfiles(a));
         } catch (RuntimeException e) {
@@ -381,23 +390,50 @@ public final class ModeSettingsUi {
                 .setPositiveButton(android.R.string.ok, null).show();
             return;
         }
-        String[] labels = new String[profiles.length];
-        for (int i = 0; i < profiles.length; i++) labels[i] = formatMac(profiles[i]);
+        String[] names = new String[profiles.length];
+        for (int i = 0; i < profiles.length; i++) {
+            names[i] = bluetoothName(a, profiles[i]);
+            if (names[i] == null) names[i] = ModeKeeper.savedProfileName(profiles[i]);
+        }
+        String[] labels = HeadsetProfileNames.labels(names, Locale.getDefault());
         new AlertDialog.Builder(a).setTitle(tr("Виберіть комплект", "Выберите комплект", "Choose headset"))
-            .setItems(labels, (dialog, index) -> show(a, profiles[index]))
+            .setItems(labels, (dialog, index) -> show(a, profiles[index], labels[index]))
             .setNegativeButton(android.R.string.cancel, null).show();
     }
+    /** Read the user's Bluetooth alias first, then the reported device name. */
+    private static String bluetoothName(Context context, String address) {
+        try {
+            BluetoothManager manager = context.getSystemService(BluetoothManager.class);
+            BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+            if (adapter == null) return null;
+            BluetoothDevice device = adapter.getRemoteDevice(formatMac(address));
+            if (Build.VERSION.SDK_INT >= 30) {
+                try {
+                    String alias = HeadsetProfileNames.safeName(device.getAlias());
+                    if (alias != null) return alias;
+                } catch (SecurityException | LinkageError ignored) {}
+            }
+            try {
+                return HeadsetProfileNames.safeName(device.getName());
+            } catch (SecurityException | LinkageError ignored) {
+                return null;
+            }
+        } catch (IllegalArgumentException | SecurityException | LinkageError ignored) {
+            return null;
+        }
+    }
+
     private static String formatMac(String address) {
         return address.replaceAll("(?<=\\G..)(?!$)", ":");
     }
-    private static void show(Activity a, String address) {
+    private static void show(Activity a, String address, String displayLabel) {
         if (a.isFinishing() || a.isDestroyed()) return;
         LinearLayout content = new LinearLayout(a);
         content.setOrientation(LinearLayout.VERTICAL);
         int pad = (int)(20 * a.getResources().getDisplayMetrics().density);
         content.setPadding(pad, pad, pad, pad);
         TextView detail = new TextView(a);
-        detail.setText(formatMac(address) + "\n" + tr(
+        detail.setText(displayLabel + "\n" + tr(
             "Виберіть потрібний режим штатними кнопками навушників у realme Link. Тут задається його автоматичне відновлення після підключення.",
             "Выберите нужный режим штатными кнопками наушников в realme Link. Здесь задаётся его автоматическое восстановление после подключения.",
             "Select the desired mode using the normal realme Link controls. Enable automatic restoration after reconnect here."));

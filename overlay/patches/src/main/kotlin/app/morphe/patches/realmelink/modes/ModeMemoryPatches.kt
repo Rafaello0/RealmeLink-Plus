@@ -191,23 +191,3 @@ val rememberGameModePatch = bytecodePatch(
     }
 }
 
-private object GestureGroup : Fingerprint(
-    definingClass = "Lcom/realme/iot/headset/utils/ItemFactory;",
-    name = "N", returnType = "Ljava/util/List;",
-    parameters = listOf("Lcom/realme/iot/common/model/rus/headset/HeadsetViewItem;"),
-)
-
-@Suppress("unused")
-val experimentalSingleTapPatch = bytecodePatch(
-    name = "Expose single tap (experimental)",
-    description = "Adds Play/Pause and Off to the single-tap menu using existing gesture mappings. No automatic writes. Earbud firmware may reject the action.",
-    default = false,
-) {
-    compatibleWith(AppCompatibilities.REALME_LINK)
-    dependsOn(runtimeExtension)
-    execute {
-        GestureGroup.matchSingle().method.addInstructions(
-            0, "invoke-static { p0 }, $EXT->exposeSingleTap(Ljava/lang/Object;)V",
-        )
-    }
-}

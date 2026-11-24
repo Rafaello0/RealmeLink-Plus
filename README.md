@@ -130,3 +130,12 @@ Exit 1 — точно виявлена раніше застосована те�
 Якщо AMOLED все одно завершується помилкою на **оригінальному APK**, потрібно надати
 повний журнал із кнопки «Технічні деталі», включно з **першою причиною**
 (`Caused by`), а не лише верхнім повідомленням про dependency.
+
+
+## BUILD028: one-tap limitations and headset screen fixes
+
+The previously added optional experimental Single Tap patch was removed: realme Buds Air7 documentation describes double-tap, triple-tap and touch-and-hold, not single tap. Inserting a menu row does not enable a firmware gesture recognizer. We do not send guessed commands to earbuds.
+
+- Mode-settings entry moved from navigation bottom to upper-right, below the headset title area.
+- Headset selection uses the Android Bluetooth alias/name or the realme vendor device name cached per profile; **never displays a MAC**. Duplicate names receive numbered suffixes; unknown names use localized generic labels.
+- Physical device behavior and visual position still need verification after patching an original APK. Compatibility tested by CI compilation and Java simulation, not an over-the-air firmware change.

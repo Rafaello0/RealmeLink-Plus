@@ -16,8 +16,6 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -183,6 +181,22 @@ public final class ModeKeeper {
         return address == null ? "" : address;
     }
 
+    /** User-facing name cached from a verified realme device; address is never displayed. */
+    public static String savedProfileName(String rawAddress) {
+        String address = normalize(rawAddress);
+        if (address == null) return null;
+        String live = HeadsetProfileNames.vendorName(knownDevice(address));
+        if (live != null) return live;
+        Context c = context;
+        if (c == null) return null;
+        try {
+            return HeadsetProfileNames.safeName(c.getSharedPreferences(STORE, Context.MODE_PRIVATE)
+                .getString(address + ".display_name", null));
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     public static String[] savedProfiles() {
         Context c = context;
         if (c == null) return new String[0];
@@ -295,6 +309,12 @@ public final class ModeKeeper {
             DEVICES.entrySet().removeIf(entry -> entry.getValue().get() == null);
             DEVICES.put(address, new WeakReference<>(device));
             LAST_ACL.keySet().retainAll(DEVICES.keySet());
+        }
+        String name = HeadsetProfileNames.vendorName(device);
+        Context c = context;
+        if (c != null && name != null) {
+            c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
+                .putString(address + ".display_name", name).apply();
         }
     }
 
@@ -661,73 +681,6 @@ public final class ModeKeeper {
         if (id == 0) return;
         try { b.append(' ').append(ctx.getResources().getResourceEntryName(id)); }
         catch (Exception ignored) { /* Resource not present in this package */ }
-    }
-
-    /**
-     * Experimental UI-only single-tap option. Uses the vendor's existing schema and
-     * normal user-initiated write path. Does not claim that every firmware accepts it.
-     */
-    public static void exposeSingleTap(Object group) {
-        if (group == null) return;
-        try {
-            Object groupType = invokeNoArg(group, "getItemType");
-            if (!"GROUP_KEY_LEFT".equals(groupType) && !"GROUP_KEY_RIGHT".equals(groupType)) return;
-            Object raw = invokeNoArg(group, "getSubItems");
-            if (!(raw instanceof List<?>)) return;
-            List<?> children = (List<?>)raw;
-            Object doubleTap = null, existing = null;
-            for (Object child : children) {
-                Object type = invokeNoArg(child, "getItemType");
-                Object action = invokeNoArg(child, "getKeyAction");
-                if ("ITEM_ACTION_SINGLE_CLICK".equals(type) ||
-                    "ITEM_ACTION_SINGLE_CLICK".equals(invokeNoArg(action, "getActionType"))) {
-                    if (existing != null) return; // ambiguous config
-                    existing = child;
-                }
-                if ("ITEM_ACTION_DOUBLE_CLICK".equals(type) &&
-                    "ITEM_ACTION_DOUBLE_CLICK".equals(invokeNoArg(action, "getActionType"))) {
-                    if (doubleTap != null) return;
-                    doubleTap = child;
-                }
-            }
-            Object source = invokeNoArg(doubleTap, "getKeyAction");
-            Object options = invokeNoArg(source, "getOptionValues");
-            if (!(options instanceof List<?>) || !((List<?>)options).contains("VALUE_PLAY_PAUSE")
-                    || !((List<?>)options).contains("VALUE_OFF")) return;
-            // Never bypass the vendor's regional/firmware restriction on the source row.
-            if (invokeNoArg(doubleTap, "getMinSupportVersion") != null ||
-                invokeNoArg(doubleTap, "getMinUnSupportVersion") != null ||
-                invokeNoArg(doubleTap, "getSupportRegions") != null) return;
-            Object restrictions = invokeNoArg(source, "getOptionSupportVersions");
-            if (restrictions instanceof Map<?,?> && ((Map<?,?>)restrictions).containsKey("VALUE_PLAY_PAUSE")) return;
-            List<String> allowed = new ArrayList<>(Arrays.asList("VALUE_PLAY_PAUSE", "VALUE_OFF"));
-            if (existing != null) {
-                // Only extend a real single-tap row whose sole action is Off. Preserve
-                // other actions, any constraints, and all existing configurable rows.
-                Object action = invokeNoArg(existing, "getKeyAction");
-                Object existingOptions = invokeNoArg(action, "getOptionValues");
-                if (!(existingOptions instanceof List<?>) ||
-                        !((List<?>)existingOptions).equals(Arrays.asList("VALUE_OFF"))) return;
-                if (invokeNoArg(existing, "getMinSupportVersion") != null ||
-                    invokeNoArg(existing, "getMinUnSupportVersion") != null ||
-                    invokeNoArg(existing, "getSupportRegions") != null) return;
-                Object limits = invokeNoArg(action, "getOptionSupportVersions");
-                if (limits instanceof Map<?,?> && !((Map<?,?>)limits).isEmpty()) return;
-                action.getClass().getMethod("setOptionValues", List.class).invoke(action, allowed);
-                return;
-            }
-            Class<?> itemClass = group.getClass();
-            Class<?> keyClass = source.getClass();
-            Object key = keyClass.getConstructor(String.class, List.class)
-                .newInstance("ITEM_ACTION_SINGLE_CLICK", allowed);
-            Object row = itemClass.getConstructor(String.class, keyClass)
-                .newInstance("ITEM_ACTION_SINGLE_CLICK", key);
-            List<Object> revised = new ArrayList<>(children);
-            revised.add(0, row);
-            itemClass.getMethod("setSubItems", List.class).invoke(group, revised);
-        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-            Log.w(TAG, "Single-tap UI not available for this config", e);
-        }
     }
 
     private static void log(String message) { Log.d(TAG, message); }
