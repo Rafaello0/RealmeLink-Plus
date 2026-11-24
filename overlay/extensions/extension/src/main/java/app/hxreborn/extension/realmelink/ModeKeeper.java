@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -21,8 +22,8 @@ import java.util.Map;
 /**
  * Fail-closed mode memory. Never guesses a SettingsInfo type, key or mode value.
  * On a manual UI write, learns the exact (type,key,value) tuple already sent by realme Link.
- * Upon a later connection, reads it back using the normal proxy callback and writes once
- * only if the actual value differs. An unknown/missing callback is NOT treated as success.
+ * On each connection, perform bounded read/compare/restore/verify rounds.
+ * Unknown state is never treated as a mismatch; user selections cancel stale checks.
  */
 public final class ModeKeeper {
     private static final String TAG = "RLM-Modes";
@@ -30,15 +31,14 @@ public final class ModeKeeper {
     private static final String SETTING = "com.realme.iot.headset.contract.bean.SettingsInfo";
     private static final String MANAGER = "com.realme.iot.headset.manager.HeadsetManager";
     private static final long UI_WINDOW_MS = 1600L;
-    private static final long RECHECK_COOLDOWN_MS = 7000L;
+    private static final long[] CHECK_DELAYS_MS = { 1700L, 4000L, 8000L };
+    private static final long QUERY_TIMEOUT_MS = 2600L;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ThreadLocal<UiTag> ACTION = new ThreadLocal<>();
-    private static final Map<String, Long> LAST_PROBE = new HashMap<>();
-    private static final Map<String, Long> LAST_WRITE = new HashMap<>();
+    private static final Map<String, Check> CHECKS = new HashMap<>();
     private static volatile Context context;
     private static volatile boolean noiseEnabled;
     private static volatile boolean gameEnabled;
-    private static volatile Object lastDevice;
 
     private ModeKeeper() { }
 
@@ -61,7 +61,8 @@ public final class ModeKeeper {
     private static final class UiTag {
         final String type;
         final long at;
-        UiTag(String type, long at) { this.type = type; this.at = at; }
+        final WeakReference<Context> ui;
+        UiTag(String type, long at, Context ui) { this.type = type; this.at = at; this.ui = new WeakReference<>(ui); }
     }
 
     private static final class Desired {
@@ -79,10 +80,11 @@ public final class ModeKeeper {
     /** Only called by the UI event handlers from the exact verified APK version. */
     public static void markUiAction(Object activity, Object item) {
         if (!(activity instanceof Context) || item == null) return;
+        if (context == null) initialize(activity);
         String category = classifyItem((Context) activity, item);
         if (("anc".equals(category) && noiseEnabled) ||
                 ("game".equals(category) && gameEnabled)) {
-            ACTION.set(new UiTag(category, SystemClock.uptimeMillis()));
+            ACTION.set(new UiTag(category, SystemClock.uptimeMillis(), (Context) activity));
             log("user initiated " + category + " action");
         } else {
             ACTION.remove();
@@ -105,10 +107,8 @@ public final class ModeKeeper {
         int key = intGetter(settings, "getSettingKey", -1);
         int value = intGetter(settings, "getSettingValue", Integer.MIN_VALUE);
         if (type < 0 || key < 0 || value == Integer.MIN_VALUE) return;
-        // These sanity limits are about setting payload size, not guessed wire meanings.
-        if ("game".equals(tag.type) && value != 0 && value != 1) {
-            log("skip non-boolean Game Mode value " + value); return;
-        }
+        // Learn the exact mode encoding from the verified UI write, not a guessed boolean.
+        if (value < 0) return;
         String id = preferenceId(mac, tag.type);
         boolean stored = c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
             .putInt(id + ".type", type)
@@ -117,49 +117,95 @@ public final class ModeKeeper {
             .putBoolean(id + ".valid", true)
             .commit();
         if (stored) {
-            lastDevice = device;
+            cancel(id);
+            Context ui = tag.ui.get();
+            if (ui != null) MAIN.post(() -> ModeSettingsUi.attach(ui, device));
             log("remembered " + tag.type + " type=" + type + " key=" + key + " value=" + value);
         } else {
             Log.w(TAG, "Failed to persist manual selection");
         }
     }
 
-    public static void onConnection(Object device, boolean connected) {
-        String mac = mac(device);
-        if (mac == null) return;
-        if (!connected) {
-            synchronized (LAST_PROBE) {
-                LAST_PROBE.remove(preferenceId(mac, "anc"));
-                LAST_PROBE.remove(preferenceId(mac, "game"));
-                LAST_WRITE.remove(preferenceId(mac, "anc"));
-                LAST_WRITE.remove(preferenceId(mac, "game"));
-            }
-            return;
-        }
-        onDeviceReady(device);
+    /** Only the captured device identity is used; two identical models never share preferences. */
+    public static boolean hasSelection(Object device, String mode) {
+        String address = mac(device);
+        return address != null && load(address, mode) != null;
     }
 
-    /** Called on device initialization even if the device was connected before Link opened. */
+    public static boolean isMaintained(Object device, String mode) {
+        String address = mac(device);
+        if (address == null || context == null || !isModeEnabled(mode)) return false;
+        return context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
+            .getBoolean(preferenceId(address, mode) + ".maintain", true);
+    }
+
+    public static boolean setMaintained(Object device, String mode, boolean enabled) {
+        String address = mac(device);
+        Context c = context;
+        if (address == null || c == null || !isModeEnabled(mode) || !hasSelection(device, mode)) return false;
+        String id = preferenceId(address, mode);
+        boolean saved = c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
+            .putBoolean(id + ".maintain", enabled).commit();
+        if (saved) {
+            cancel(id);
+            if (enabled) scheduleCheck(device, mode);
+        }
+        return saved;
+    }
+
+    public static String deviceIdentity(Object device) {
+        String address = mac(device);
+        return address == null ? "" : address;
+    }
+
+    private static boolean isModeEnabled(String mode) {
+        return ("anc".equals(mode) && noiseEnabled) || ("game".equals(mode) && gameEnabled);
+    }
+
+    private static final class Check {
+        final Object device;
+        final Desired want;
+        final String id;
+        int round, ticket;
+        boolean waiting, done, wrote;
+        Check(Object device, Desired want) {
+            this.device = device; this.want = want;
+            this.id = preferenceId(want.mac, want.mode);
+        }
+    }
+
+    private static void cancel(String id) {
+        synchronized (CHECKS) { CHECKS.remove(id); }
+    }
+
+    public static void onConnection(Object device, boolean connected) {
+        String address = mac(device);
+        if (address == null) return;
+        if (!connected) {
+            cancel(preferenceId(address, "anc"));
+            cancel(preferenceId(address, "game"));
+        } else {
+            onDeviceReady(device);
+        }
+    }
+
     public static void onDeviceReady(Object device) {
         if (device == null || mac(device) == null) return;
-        lastDevice = device;
-        if (noiseEnabled) scheduleCheck(device, "anc", 1600);
-        if (gameEnabled) scheduleCheck(device, "game", 2300);
+        if (noiseEnabled) scheduleCheck(device, "anc");
+        if (gameEnabled) scheduleCheck(device, "game");
     }
 
-    private static void scheduleCheck(Object device, String mode, long delay) {
-        String mac = mac(device);
-        if (mac == null) return;
-        Desired want = load(mac, mode);
+    private static void scheduleCheck(Object device, String mode) {
+        String address = mac(device);
+        if (address == null || !isMaintained(device, mode)) return;
+        Desired want = load(address, mode);
         if (want == null) return;
-        String id = preferenceId(mac, mode);
-        long now = SystemClock.uptimeMillis();
-        synchronized (LAST_PROBE) {
-            Long prev = LAST_PROBE.get(id);
-            if (prev != null && now - prev < RECHECK_COOLDOWN_MS) return;
-            LAST_PROBE.put(id, now);
+        Check check = new Check(device, want);
+        synchronized (CHECKS) {
+            if (CHECKS.containsKey(check.id)) return;
+            CHECKS.put(check.id, check);
         }
-        MAIN.postDelayed(() -> queryActual(device, want, false), delay);
+        MAIN.postDelayed(() -> startRound(check), CHECK_DELAYS_MS[0]);
     }
 
     private static Desired load(String mac, String mode) {
@@ -168,92 +214,123 @@ public final class ModeKeeper {
         SharedPreferences p = c.getSharedPreferences(STORE, Context.MODE_PRIVATE);
         String id = preferenceId(mac, mode);
         if (!p.getBoolean(id + ".valid", false)) return null;
-        return new Desired(mode, mac, p.getInt(id + ".type", -1),
-            p.getInt(id + ".key", -1), p.getInt(id + ".value", Integer.MIN_VALUE));
+        int type = p.getInt(id + ".type", -1);
+        int key = p.getInt(id + ".key", -1);
+        int value = p.getInt(id + ".value", -1);
+        return type < 0 || key < 0 || value < 0 ? null : new Desired(mode, mac, type, key, value);
     }
 
-    private static void queryActual(Object device, Desired want, boolean verifyOnly) {
-        if (device == null || !want.mac.equals(mac(device))) return;
+    private static boolean current(Check check) {
+        synchronized (CHECKS) {
+            if (CHECKS.get(check.id) != check || check.done) return false;
+        }
+        Desired latest = load(check.want.mac, check.want.mode);
+        return isMaintained(check.device, check.want.mode) &&
+            latest != null && latest.type == check.want.type && latest.key == check.want.key &&
+            latest.value == check.want.value && check.want.mac.equals(mac(check.device));
+    }
+
+    private static void startRound(Check check) {
+        if (!current(check)) return;
+        check.wrote = false;
+        queryActual(check, false);
+    }
+
+    private static void finishRound(Check check) {
+        if (!current(check)) return;
+        check.waiting = false;
+        if (++check.round >= CHECK_DELAYS_MS.length) {
+            check.done = true; // Keep the session marker until disconnect or manual change.
+            return;
+        }
+        MAIN.postDelayed(() -> startRound(check), CHECK_DELAYS_MS[check.round]);
+    }
+
+    private static void queryActual(Check check, boolean verifyOnly) {
+        if (!current(check)) return;
+        final int ticket = ++check.ticket;
+        check.waiting = true;
         try {
             Object manager = getManager();
-            if (manager == null || !isConnected(manager, device)) return;
+            if (manager == null || !isConnected(manager, check.device)) {
+                finishRound(check); return;
+            }
             Method query = findMethod(manager.getClass(), "x", 4);
-            if (query == null) { Log.w(TAG, "Settings query method unavailable"); return; }
+            if (query == null || !query.getParameterTypes()[3].isInterface()) {
+                finishRound(check); return;
+            }
             Class<?> cbInterface = query.getParameterTypes()[3];
-            if (!cbInterface.isInterface()) { Log.w(TAG, "Settings callback is not an interface"); return; }
             Object cb = Proxy.newProxyInstance(cbInterface.getClassLoader(), new Class<?>[]{cbInterface},
-                (proxy, method, args) -> handleReply(method, args, device, want, verifyOnly));
-            query.invoke(manager, device, want.type, want.key, cb);
+                (proxy, method, args) -> {
+                    String name = method.getName();
+                    if ("toString".equals(name)) return "ModeKeeperCallback";
+                    if ("hashCode".equals(name)) return System.identityHashCode(proxy);
+                    if ("equals".equals(name)) return args != null && args.length == 1 && proxy == args[0];
+                    if (args != null && args.length == 3 && args[1] instanceof Integer &&
+                            check.want.mac.equals(mac(args[0]))) {
+                        int code = (Integer) args[1];
+                        Object info = args[2];
+                        MAIN.post(() -> handleReply(check, ticket, verifyOnly, code, info));
+                    }
+                    return null;
+                });
+            query.invoke(manager, check.device, check.want.type, check.want.key, cb);
+            MAIN.postDelayed(() -> {
+                if (current(check) && check.waiting && check.ticket == ticket) finishRound(check);
+            }, QUERY_TIMEOUT_MS);
         } catch (Throwable ex) {
-            Log.w(TAG, "Read failed, no blind write for " + want.mode, ex);
+            Log.w(TAG, "Read failed for " + check.want.mode, ex);
+            if (current(check) && check.waiting && check.ticket == ticket) finishRound(check);
         }
     }
 
-    private static Object handleReply(Method callback, Object[] args, Object device,
-                                      Desired want, boolean verifyOnly) {
-        String method = callback.getName();
-        if ("toString".equals(method)) return "ModeKeeperCallback";
-        if ("hashCode".equals(method)) return System.identityHashCode(want);
-        if ("equals".equals(method)) return args != null && args.length == 1 && args[0] != null;
-        if (args == null || args.length != 3 || !(args[1] instanceof Integer)) return null;
-        int resultCode = (Integer) args[1];
-        if (resultCode != 0) { log("query rejected code=" + resultCode); return null; }
-        Object info = args[2];
+    private static void handleReply(Check check, int ticket, boolean verifyOnly, int code, Object info) {
+        if (!current(check) || !check.waiting || ticket != check.ticket) return;
+        if (code != 0) { finishRound(check); return; }
+        int value = -1;
         if (info instanceof Iterable<?>) {
-            for (Object element : (Iterable<?>) info) handleInfo(device, want, element, verifyOnly);
+            for (Object element : (Iterable<?>) info) {
+                value = readValue(check.want, element);
+                if (value >= 0) break;
+            }
+        } else value = readValue(check.want, info);
+        if (value < 0) return; // Wait for a valid response; never write from an unknown state.
+        check.waiting = false;
+        if (value == check.want.value) {
+            log((verifyOnly ? "verified " : "already correct ") + check.want.mode + "=" + value);
+            finishRound(check);
+        } else if (verifyOnly || check.wrote) {
+            Log.w(TAG, "Mode not yet confirmed: " + check.want.mode);
+            finishRound(check);
         } else {
-            handleInfo(device, want, info, verifyOnly);
+            sendOnce(check);
         }
-        return null;
     }
 
-    private static void handleInfo(Object device, Desired want, Object info, boolean verifyOnly) {
-        if (info == null) return;
-        if (intGetter(info, "getSettingType", -1) != want.type ||
-                intGetter(info, "getSettingKey", -1) != want.key) return;
-        int current = intGetter(info, "getSettingValue", Integer.MIN_VALUE);
-        if (current == Integer.MIN_VALUE) return;
-        if (current == want.value) {
-            log((verifyOnly ? "verified " : "already correct ") + want.mode + "=" + current);
-            return;
-        }
-        if (verifyOnly) {
-            Log.w(TAG, "Write not confirmed for " + want.mode + ": got " + current);
-            return;
-        }
-        // User might have manually changed the selection during the delayed query.
-        Desired latest = load(want.mac, want.mode);
-        if (latest == null || latest.type != want.type || latest.key != want.key ||
-                latest.value != want.value || !want.mac.equals(mac(device))) return;
-        MAIN.post(() -> sendOnce(device, want));
+    private static int readValue(Desired want, Object info) {
+        if (info == null || intGetter(info, "getSettingType", -1) != want.type ||
+                intGetter(info, "getSettingKey", -1) != want.key) return -1;
+        return intGetter(info, "getSettingValue", -1);
     }
 
-    private static void sendOnce(Object device, Desired want) {
-        // A late query must never overwrite a newer manual selection.
-        Desired latest = load(want.mac, want.mode);
-        if (latest == null || latest.type != want.type || latest.key != want.key ||
-                latest.value != want.value || !want.mac.equals(mac(device))) return;
-        String id = preferenceId(want.mac, want.mode);
-        long now = SystemClock.uptimeMillis();
-        synchronized (LAST_PROBE) {
-            Long last = LAST_WRITE.get(id);
-            if (last != null && now - last < RECHECK_COOLDOWN_MS) return;
-            LAST_WRITE.put(id, now);
-        }
+    private static void sendOnce(Check check) {
+        if (!current(check) || check.wrote) return;
+        Desired want = check.want;
         try {
             Object manager = getManager();
-            if (manager == null || !isConnected(manager, device)) return;
+            if (manager == null || !isConnected(manager, check.device)) { finishRound(check); return; }
             Method send = findMethod(manager.getClass(), "J3", 3);
-            if (send == null) return;
+            if (send == null) { finishRound(check); return; }
             Class<?> infoClass = Class.forName(SETTING, false, manager.getClass().getClassLoader());
             Constructor<?> ctor = infoClass.getConstructor(int.class, int.class, int.class);
             Object info = ctor.newInstance(want.type, want.key, want.value);
-            // No UI marker and no change to other settings. Do not retry on failure.
-            send.invoke(manager, device, info, null);
+            check.wrote = true;
+            send.invoke(manager, check.device, info, null);
             log("restore sent " + want.mode + "=" + want.value);
-            MAIN.postDelayed(() -> queryActual(device, want, true), 1600L);
+            MAIN.postDelayed(() -> queryActual(check, true), 1600L);
         } catch (Throwable ex) {
             Log.w(TAG, "Failed to restore " + want.mode, ex);
+            finishRound(check);
         }
     }
 
@@ -293,7 +370,8 @@ public final class ModeKeeper {
         try {
             Object m = device.getClass().getMethod("getMac").invoke(device);
             if (!(m instanceof String) || ((String) m).isEmpty()) return null;
-            return ((String) m).replace(":", "").replace("-", "").toUpperCase(Locale.ROOT);
+            String address = ((String) m).replace(":", "").replace("-", "").toUpperCase(Locale.ROOT);
+            return address.matches("[0-9A-F]{12}") ? address : null;
         } catch (Throwable ex) { return null; }
     }
 

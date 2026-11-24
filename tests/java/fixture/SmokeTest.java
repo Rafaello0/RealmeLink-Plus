@@ -15,6 +15,8 @@ public class SmokeTest {
   a.select(bud,12,2,0,1);
   a.select(bud,11,6,0,1);
   check(m.writes==0,"capture should not itself send commands");
+  m.actual.put("001122334455:2:0",0);
+  m.actual.put("001122334455:6:0",0);
   ModeKeeper.onDeviceReady(bud);
   check(m.writes==2,"both saved modes must be restored exactly once");
   check(m.actual.get("001122334455:2:0")==1,"ANC mismatch");
@@ -24,6 +26,23 @@ public class SmokeTest {
   Device different=new Device("AA:BB:CC:DD:EE:FF");
   a.select(different,999,4,0,1);ModeKeeper.onDeviceReady(different);
   check(m.writes==2,"unknown UI row must be ignored");
+  check(ModeKeeper.setMaintained(bud,"anc",false),"disable ANC maintenance");
+  ModeKeeper.onConnection(bud,false);
+  m.actual.put("001122334455:2:0",0);
+  m.actual.put("001122334455:6:0",0);
+  ModeKeeper.onConnection(bud,true);
+  check(m.writes==3,"only enabled game restored");
+  check(m.actual.get("001122334455:2:0")==0,"disabled ANC left unchanged");
+  a.select(different,12,2,0,2);
+  m.actual.put("AABBCCDDEEFF:2:0",0);
+  ModeKeeper.onConnection(different,true);
+  check(m.actual.get("AABBCCDDEEFF:2:0")==2,"other pair independent");
+  check(!ModeKeeper.isMaintained(bud,"anc") && ModeKeeper.isMaintained(different,"anc"),"independent preferences");
+  ModeKeeper.onConnection(different,false);
+  m.actual.remove("AABBCCDDEEFF:2:0");
+  int before=m.writes;
+  ModeKeeper.onConnection(different,true);
+  check(m.writes==before,"unknown read never writes");
   System.out.println("SMOKE PASS: saved modes, read-before-write, verify, cooldown, unknown rows");
  }
 }
