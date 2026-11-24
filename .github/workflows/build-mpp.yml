@@ -52,10 +52,19 @@ jobs:
       - name: Test upstream overlay retention
         run: python3 tools/test_prepare_upstream.py
 
+      - name: Verify already-patched APK detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/test_check_input_apk.py
+
       - name: Validate source tree
         shell: bash
         run: |
           set -euo pipefail
+          session=overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/session/BypassSessionExpiryPatch.kt
+          test -s "$session"
+          grep -Fq 'ReLoginToastFingerprint.matchAllOrNull()' "$session"
           test -s overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
           test -s overlay/extensions/extension/src/main/java/app/hxreborn/extension/realmelink/ModeKeeper.java
           grep -Fq 'Remember noise control mode' overlay/patches/src/main/kotlin/app/morphe/patches/realmelink/modes/ModeMemoryPatches.kt
