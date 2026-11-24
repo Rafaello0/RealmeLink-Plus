@@ -18,6 +18,7 @@ import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeSet;
 
 /**
  * Fail-closed mode memory. Never guesses a SettingsInfo type, key or mode value.
@@ -36,6 +37,8 @@ public final class ModeKeeper {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final ThreadLocal<UiTag> ACTION = new ThreadLocal<>();
     private static final Map<String, Check> CHECKS = new HashMap<>();
+    private static final Map<String, WeakReference<Object>> DEVICES = new HashMap<>();
+    private static final Map<String, Long> LAST_ACL = new HashMap<>();
     private static volatile Context context;
     private static volatile boolean noiseEnabled;
     private static volatile boolean gameEnabled;
@@ -46,6 +49,7 @@ public final class ModeKeeper {
         if (maybeApp instanceof Context) {
             Context c = (Context) maybeApp;
             context = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+            ModeSettingsUi.install(context);
             log("runtime attached to realme Link");
         }
     }
@@ -111,6 +115,7 @@ public final class ModeKeeper {
         // Learn the exact mode encoding from the verified UI write, not a guessed boolean.
         if (value < 0) return;
         String id = preferenceId(mac, tag.type);
+        rememberDevice(device);
         cancel(id);
         c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
             .putInt(id + ".type", type)
@@ -128,11 +133,19 @@ public final class ModeKeeper {
     /** Only the captured device identity is used; two identical models never share preferences. */
     public static boolean hasSelection(Object device, String mode) {
         String address = mac(device);
-        return address != null && isModeEnabled(mode) && load(address, mode) != null;
+        return hasSelectionFor(address, mode);
+    }
+
+    public static boolean hasSelectionFor(String address, String mode) {
+        return normalize(address) != null && isModeEnabled(mode) && load(normalize(address), mode) != null;
     }
 
     public static boolean isMaintained(Object device, String mode) {
-        String address = mac(device);
+        return isMaintainedFor(mac(device), mode);
+    }
+
+    public static boolean isMaintainedFor(String address, String mode) {
+        address = normalize(address);
         if (address == null || context == null || !isModeEnabled(mode)) return false;
         try {
             return context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
@@ -144,20 +157,93 @@ public final class ModeKeeper {
     }
 
     public static boolean setMaintained(Object device, String mode, boolean enabled) {
-        String address = mac(device);
+        rememberDevice(device);
+        return setMaintainedFor(mac(device), mode, enabled);
+    }
+
+    public static boolean setMaintainedFor(String address, String mode, boolean enabled) {
+        address = normalize(address);
         Context c = context;
-        if (address == null || c == null || !isModeEnabled(mode) || !hasSelection(device, mode)) return false;
+        if (address == null || c == null || !hasSelectionFor(address, mode)) return false;
         String id = preferenceId(address, mode);
         cancel(id);
         c.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
             .putBoolean(id + ".maintain", enabled).apply();
-        if (enabled) scheduleCheck(device, mode);
+        Object device = knownDevice(address);
+        if (enabled && device != null) scheduleCheck(device, mode);
         return true;
     }
 
     public static String deviceIdentity(Object device) {
         String address = mac(device);
         return address == null ? "" : address;
+    }
+
+    public static String[] savedProfiles() {
+        Context c = context;
+        if (c == null) return new String[0];
+        TreeSet<String> ids = new TreeSet<>();
+        for (String key : c.getSharedPreferences(STORE, Context.MODE_PRIVATE).getAll().keySet()) {
+            if (key.endsWith(".anc.valid") || key.endsWith(".game.valid")) {
+                String address = normalize(key.substring(0, key.indexOf('.')));
+                if (address != null && (hasSelectionFor(address, "anc") || hasSelectionFor(address, "game")))
+                    ids.add(address);
+            }
+        }
+        return ids.toArray(new String[0]);
+    }
+
+    public static boolean modeAvailable(String mode) { return isModeEnabled(mode); }
+
+    private static void rememberDevice(Object device) {
+        String address = mac(device);
+        if (address == null) return;
+        synchronized (DEVICES) {
+            DEVICES.entrySet().removeIf(entry -> entry.getValue().get() == null);
+            DEVICES.put(address, new WeakReference<>(device));
+            LAST_ACL.keySet().retainAll(DEVICES.keySet());
+        }
+    }
+
+    private static Object knownDevice(String address) {
+        synchronized (DEVICES) {
+            WeakReference<Object> ref = DEVICES.get(address);
+            return ref == null ? null : ref.get();
+        }
+    }
+
+    /** OS events are hints only. All writes still require a real vendor device and read-back. */
+    public static void onBluetoothEvent(String rawAddress, boolean connected) {
+        String address = normalize(rawAddress);
+        if (address == null) return;
+        MAIN.post(() -> {
+            Object device = knownDevice(address);
+            if (device == null) return;
+            if (!connected) {
+                // ACL transport and vendor control connection need not disconnect together.
+                try {
+                    Object manager = getManager();
+                    if (manager != null && isConnected(manager, device)) return;
+                } catch (ReflectiveOperationException | RuntimeException ignored) { return; }
+                onConnection(device, false);
+                synchronized (DEVICES) { LAST_ACL.remove(address); }
+                return;
+            }
+            synchronized (DEVICES) {
+                long now = SystemClock.uptimeMillis();
+                Long last = LAST_ACL.get(address);
+                if (last != null && now - last < 2500L) return;
+                LAST_ACL.put(address, now);
+            }
+            synchronized (CHECKS) {
+                for (String mode : new String[]{"anc", "game"}) {
+                    String id = preferenceId(address, mode);
+                    Check previous = CHECKS.get(id);
+                    if (previous != null && previous.done) CHECKS.remove(id);
+                }
+            }
+            onDeviceReady(device);
+        });
     }
 
     private static boolean isModeEnabled(String mode) {
@@ -185,6 +271,7 @@ public final class ModeKeeper {
     public static void onConnection(Object device, boolean connected) {
         String address = mac(device);
         if (address == null) return;
+        rememberDevice(device);
         if (!connected) {
             cancel(preferenceId(address, "anc"));
             cancel(preferenceId(address, "game"));
@@ -195,6 +282,7 @@ public final class ModeKeeper {
 
     public static void onDeviceReady(Object device) {
         if (device == null || mac(device) == null) return;
+        rememberDevice(device);
         if (noiseEnabled) scheduleCheck(device, "anc");
         if (gameEnabled) scheduleCheck(device, "game");
     }
@@ -352,8 +440,10 @@ public final class ModeKeeper {
 
     private static boolean isConnected(Object manager, Object device) {
         try {
-            Method check = findMethod(manager.getClass(), "isDeviceConnected", 1);
-            return check != null && Boolean.TRUE.equals(check.invoke(manager, device));
+            Class<?> dev = Class.forName("com.realme.iot.common.devices.Device", false,
+                manager.getClass().getClassLoader());
+            return dev.isInstance(device) && Boolean.TRUE.equals(
+                manager.getClass().getMethod("isDeviceConnected", dev).invoke(manager, device));
         } catch (Throwable ex) { return false; }
     }
 
@@ -374,15 +464,6 @@ public final class ModeKeeper {
             : manager.getClass().getMethod(name, dev, Class.forName(SETTING, false, loader), cb);
     }
 
-    private static Method findMethod(Class<?> cls, String name, int argCount) {
-        for (Method method : cls.getMethods()) {
-            if (method.getName().equals(name) && method.getParameterCount() == argCount) {
-                return method;
-            }
-        }
-        return null;
-    }
-
     private static int intGetter(Object object, String method, int fallback) {
         if (object == null) return fallback;
         try {
@@ -396,10 +477,15 @@ public final class ModeKeeper {
         try {
             Object m = device.getClass().getMethod("getMac").invoke(device);
             if (!(m instanceof String) || ((String) m).isEmpty()) return null;
-            String address = ((String) m).replace(":", "").replace("-", "").toUpperCase(Locale.ROOT);
-            return address.matches("[0-9A-F]{12}") && !address.equals("000000000000")
-                && !address.equals("FFFFFFFFFFFF") && !address.equals("020000000000") ? address : null;
+            return normalize((String)m);
         } catch (Throwable ex) { return null; }
+    }
+
+    private static String normalize(String raw) {
+        if (raw == null || !raw.matches("(?i)([0-9a-f]{12}|[0-9a-f]{2}(:[0-9a-f]{2}){5}|[0-9a-f]{2}(-[0-9a-f]{2}){5})")) return null;
+        String address = raw.replace(":", "").replace("-", "").toUpperCase(Locale.ROOT);
+        return !address.equals("000000000000") && !address.equals("FFFFFFFFFFFF")
+            && !address.equals("020000000000") ? address : null;
     }
 
     private static String preferenceId(String mac, String mode) { return mac + "." + mode; }

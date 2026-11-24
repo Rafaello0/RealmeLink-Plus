@@ -1,5 +1,6 @@
 package android.content;
 public interface SharedPreferences {
+ java.util.Map<String, ?> getAll();
  int getInt(String key,int fallback);
  boolean getBoolean(String key,boolean fallback);
  Editor edit();

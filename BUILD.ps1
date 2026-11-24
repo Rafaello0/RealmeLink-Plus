@@ -84,13 +84,7 @@ $files = @(Get-ChildItem -LiteralPath (Join-Path $repo "patches\build\libs") -Fi
 if ($files.Count -ne 1) { throw "Expected exactly one .mpp, found $($files.Count)" }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 $version = if ($env:REALMELINK_RELEASE_VERSION) { $env:REALMELINK_RELEASE_VERSION } else { "0.3.0" }
-if ($version -notmatch '^0\.3\.(\d+)
-Copy-Item -LiteralPath $files[0].FullName -Destination $target -Force
-& python (Join-Path $root "tools\verify_bundle.py") $target
-Assert-Success "Validate bundle metadata"
-Write-Host "Created: $target"
-Write-Host "SHA256: $((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)"
-) { throw "Invalid release version: $version" }
+if ($version -notmatch '^0\.3\.(\d+)$') { throw "Invalid release version: $version" }
 $build = $Matches[1]
 $target = Join-Path $dist "RealmeLink-Plus_build${build}_local.mpp"
 Copy-Item -LiteralPath $files[0].FullName -Destination $target -Force

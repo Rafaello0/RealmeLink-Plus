@@ -63,6 +63,20 @@ public class SmokeTest {
   before=m.writes;
   Handler.drain();
   check(m.writes==before,"new manual selection cancels old work");
+  check(ModeKeeper.savedProfiles().length==2,"persisted profiles independent");
+  check(ModeKeeper.setMaintainedFor("00:11:22:33:44:55","anc",true),"offline profile control");
+  Handler.drain();
+  m.actual.put("001122334455:2:0",0);
+  ModeKeeper.onBluetoothEvent("00:11:22:33:44:55",true);
+  ModeKeeper.onBluetoothEvent("00:11:22:33:44:55",true);
+  Handler.drain();
+  check(m.actual.get("001122334455:2:0")==1,"ACL reconnect restores known profile");
+  before=m.writes;
+  ModeKeeper.onBluetoothEvent("AA:00:00:00:00:01",true);
+  ModeKeeper.onBluetoothEvent("00:11:22:33:44:55",false);
+  Handler.drain();
+  check(m.writes==before,"unknown ACL and disconnect do not write");
+  check(!ModeKeeper.setMaintainedFor("00:11:22:33:44:5Z","anc",true),"invalid address rejected");
   System.out.println("SMOKE PASS: saved modes, read-before-write, verify, cooldown, unknown rows");
  }
 }
