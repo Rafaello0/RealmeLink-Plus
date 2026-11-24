@@ -71,11 +71,26 @@ private val reconnectManifest = resourcePatch {
             val prefix = "app.hxreborn.extension.realmelink.ModeSettingsUi"
             val receiverName = prefix + "$" + "ReconnectReceiver"
             val serviceName = prefix + "$" + "ReconnectJob"
+            val companionName = prefix + "$" + "PresenceService"
+            val manifest = doc.documentElement
+            fun declare(tag: String, name: String, optional: Boolean = false) {
+                val nodes = manifest.getElementsByTagName(tag)
+                if ((0 until nodes.length).any {
+                    (nodes.item(it) as? Element)?.getAttribute("android:name") == name
+                }) return
+                val node = doc.createElement(tag)
+                node.setAttribute("android:name", name)
+                if (optional) node.setAttribute("android:required", "false")
+                manifest.insertBefore(node, application)
+            }
+            declare("uses-feature", "android.software.companion_device_setup", true)
+            declare("uses-permission", "android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE")
             val existing = application.childNodes
             for (i in 0 until existing.length) {
                 val e = existing.item(i) as? Element ?: continue
                 check(e.getAttribute("android:name") != receiverName &&
-                    e.getAttribute("android:name") != serviceName) { "Duplicate reconnect component" }
+                    e.getAttribute("android:name") != serviceName &&
+                    e.getAttribute("android:name") != companionName) { "Duplicate reconnect component" }
             }
             val receiver = doc.createElement("receiver")
             receiver.setAttribute("android:name", receiverName)
@@ -95,6 +110,16 @@ private val reconnectManifest = resourcePatch {
             service.setAttribute("android:exported", "true")
             service.setAttribute("android:permission", "android.permission.BIND_JOB_SERVICE")
             application.appendChild(service)
+            val companion = doc.createElement("service")
+            companion.setAttribute("android:name", companionName)
+            companion.setAttribute("android:exported", "true")
+            companion.setAttribute("android:permission", "android.permission.BIND_COMPANION_DEVICE_SERVICE")
+            val companionFilter = doc.createElement("intent-filter")
+            val companionAction = doc.createElement("action")
+            companionAction.setAttribute("android:name", "android.companion.CompanionDeviceService")
+            companionFilter.appendChild(companionAction)
+            companion.appendChild(companionFilter)
+            application.appendChild(companion)
         }
     }
 }

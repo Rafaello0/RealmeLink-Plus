@@ -11,6 +11,16 @@ import android.app.job.JobParameters;
 import android.app.job.JobScheduler;
 import android.app.job.JobService;
 import android.content.ComponentName;
+import android.content.IntentSender;
+import android.content.pm.PackageManager;
+import android.companion.AssociationInfo;
+import android.companion.AssociationRequest;
+import android.companion.BluetoothDeviceFilter;
+import android.companion.CompanionDeviceManager;
+import android.companion.CompanionDeviceService;
+import android.companion.DevicePresenceEvent;
+import android.companion.ObservingDevicePresenceRequest;
+import java.lang.ref.WeakReference;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PersistableBundle;
@@ -40,6 +50,8 @@ public final class ModeSettingsUi {
     private static final String BUTTON_TAG = "rlm_mode_settings_button";
     private static final String SCREEN = "com.realme.iot.headset.activity.device.HeadsetDeviceActivity";
     private static boolean installed;
+    private static final String PRESENCE_STORE = "rlm_companion_presence_v1";
+    private static final int CONSENT_REQUEST = 0x524c;
     private ModeSettingsUi() {}
 
     public static synchronized void install(Context context) {
@@ -70,36 +82,170 @@ public final class ModeSettingsUi {
             try {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice.class);
                 if (device == null) return;
-                String address = device.getAddress();
-                if (!ModeKeeper.activeProfile(address)) return;
-                JobScheduler scheduler = context.getSystemService(JobScheduler.class);
-                if (scheduler == null) return;
-                ComponentName service = new ComponentName(context, ReconnectJob.class);
-                int id = 0x52000000 | (address.hashCode() & 0x00ffffff);
-                JobInfo old = scheduler.getPendingJob(id);
-                if (old != null && (!service.equals(old.getService())
-                        || !address.equals(old.getExtras().getString("address")))) {
-                    android.util.Log.w(TAG, "Reconnect job ID collision");
-                    return;
-                }
-                if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
-                    if (old != null) scheduler.cancel(id);
-                    ModeKeeper.onBluetoothEvent(address, false);
-                    return;
-                }
-                if (old != null) return; // duplicate ACL event
-                PersistableBundle extras = new PersistableBundle();
-                extras.putString("address", address);
-                extras.putLong("eventAt", SystemClock.elapsedRealtime());
-                JobInfo job = new JobInfo.Builder(id, service).setExtras(extras)
-                    .setMinimumLatency(0).setOverrideDeadline(10000L).build();
-                if (scheduler.schedule(job) != JobScheduler.RESULT_SUCCESS)
-                    android.util.Log.w(TAG, "Could not schedule headset reconnect");
-                // Live-process path remains useful even if the scheduler is delayed.
-                ModeKeeper.onBluetoothEvent(address, true);
+                dispatchReconnect(context, device.getAddress(), BluetoothDevice.ACTION_ACL_CONNECTED.equals(action));
             } catch (RuntimeException e) {
                 android.util.Log.w(TAG, "Bluetooth reconnect unavailable", e);
             }
+        }
+    }
+
+    private static void dispatchReconnect(Context context, String raw, boolean connected) {
+        if (raw == null) return;
+        String address = raw.toUpperCase(Locale.ROOT);
+        if (!ModeKeeper.activeProfile(address)) return;
+        try {
+            JobScheduler scheduler = context.getSystemService(JobScheduler.class);
+            if (scheduler == null) {
+                ModeKeeper.onBluetoothEvent(address, connected);
+                return;
+            }
+            ComponentName service = new ComponentName(context, ReconnectJob.class);
+            int id = 0x52000000 | (address.hashCode() & 0x00ffffff);
+            JobInfo old = scheduler.getPendingJob(id);
+            if (old != null && (!service.equals(old.getService())
+                    || !address.equals(old.getExtras().getString("address")))) {
+                android.util.Log.w(TAG, "Reconnect job ID collision");
+                return;
+            }
+            if (!connected) {
+                if (old != null) scheduler.cancel(id);
+                ModeKeeper.onBluetoothEvent(address, false);
+                return;
+            }
+            if (old != null) return;
+            PersistableBundle extras = new PersistableBundle();
+            extras.putString("address", address);
+            extras.putLong("eventAt", SystemClock.elapsedRealtime());
+            JobInfo job = new JobInfo.Builder(id, service).setExtras(extras)
+                .setMinimumLatency(0).setOverrideDeadline(10000L).build();
+            if (scheduler.schedule(job) != JobScheduler.RESULT_SUCCESS)
+                android.util.Log.w(TAG, "Could not schedule headset reconnect");
+            ModeKeeper.onBluetoothEvent(address, true);
+        } catch (RuntimeException e) {
+            android.util.Log.w(TAG, "Bluetooth reconnect unavailable", e);
+        }
+    }
+
+    private static boolean presenceEnabled(Context c, String address) {
+        try {
+            return c.getSharedPreferences(PRESENCE_STORE, Context.MODE_PRIVATE)
+                .getBoolean(address.toUpperCase(Locale.ROOT), false);
+        } catch (ClassCastException e) { return false; }
+    }
+
+    private static AssociationInfo findAssociation(CompanionDeviceManager manager, String address) {
+        for (AssociationInfo info : manager.getMyAssociations()) {
+            if (info.getDeviceMacAddress() != null &&
+                    address.equalsIgnoreCase(info.getDeviceMacAddress().toString())) return info;
+        }
+        return null;
+    }
+
+    private static boolean observe(Context c, CompanionDeviceManager manager, AssociationInfo info, boolean enabled) {
+        if (info.getDeviceMacAddress() == null) return false;
+        String address = info.getDeviceMacAddress().toString().toUpperCase(Locale.ROOT);
+        try {
+            if (Build.VERSION.SDK_INT >= 36) {
+                ObservingDevicePresenceRequest request = new ObservingDevicePresenceRequest.Builder()
+                    .setAssociationId(info.getId()).build();
+                if (enabled) manager.startObservingDevicePresence(request);
+                else manager.stopObservingDevicePresence(request);
+            } else {
+                if (enabled) manager.startObservingDevicePresence(address);
+                else manager.stopObservingDevicePresence(address);
+            }
+            c.getSharedPreferences(PRESENCE_STORE, Context.MODE_PRIVATE).edit()
+                .putBoolean(address, enabled).apply();
+            return true;
+        } catch (Exception | LinkageError e) {
+            android.util.Log.w(TAG, "Companion presence unavailable", e);
+            return false;
+        }
+    }
+
+    private static void message(Context c, String ua, String ru, String en) {
+        Toast.makeText(c, tr(ua, ru, en), Toast.LENGTH_LONG).show();
+    }
+
+    private static void configurePresence(Activity a, String raw) {
+        String address = formatMac(raw).toUpperCase(Locale.ROOT);
+        Context app = a.getApplicationContext();
+        CompanionDeviceManager manager = app.getSystemService(CompanionDeviceManager.class);
+        if (manager == null || !app.getPackageManager().hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)) {
+            message(app, "Companion API недоступний", "Companion API недоступен", "Companion API unavailable");
+            return;
+        }
+        try {
+            AssociationInfo existing = findAssociation(manager, address);
+            if (existing != null) {
+                boolean enabled = !presenceEnabled(app, address);
+                if (observe(app, manager, existing, enabled)) {
+                    if (enabled) {
+                        message(app, "Фонове відновлення увімкнено", "Фоновое восстановление включено", "Background restoration enabled");
+                    } else {
+                        message(app, "Companion-пробудження вимкнено", "Companion-пробуждение отключено", "Companion wake disabled");
+                    }
+                } else message(app, "Не вдалося змінити спостереження", "Не удалось изменить наблюдение", "Could not change presence observation");
+                return;
+            }
+            if (!ModeKeeper.activeProfile(address)) {
+                message(app, "Спочатку увімкніть підтримку режиму", "Сначала включите сохранение режима", "Enable mode maintenance first");
+                return;
+            }
+            WeakReference<Activity> owner = new WeakReference<>(a);
+            AssociationRequest request = new AssociationRequest.Builder().setSingleDevice(true)
+                .addDeviceFilter(new BluetoothDeviceFilter.Builder().setAddress(address).build()).build();
+            manager.associate(request, app.getMainExecutor(), new CompanionDeviceManager.Callback() {
+                @Override public void onAssociationPending(IntentSender sender) {
+                    Activity current = owner.get();
+                    if (current == null || current.isFinishing() || current.isDestroyed()) return;
+                    try {
+                        current.startIntentSenderForResult(sender, CONSENT_REQUEST, null, 0, 0, 0);
+                    } catch (IntentSender.SendIntentException | RuntimeException e) {
+                        android.util.Log.w(TAG, "Cannot open companion consent", e);
+                    }
+                }
+                @Override public void onAssociationCreated(AssociationInfo info) {
+                    if (info.getDeviceMacAddress() != null &&
+                            address.equalsIgnoreCase(info.getDeviceMacAddress().toString()) &&
+                            ModeKeeper.activeProfile(address) && observe(app, manager, info, true)) {
+                        message(app, "Фонове відновлення увімкнено", "Фоновое восстановление включено", "Background restoration enabled");
+                    } else message(app, "Не вдалося активувати комплект", "Не удалось активировать комплект", "Could not activate headset");
+                }
+                @Override public void onFailure(CharSequence error) {
+                    message(app, "Прив’язку не завершено", "Привязка не завершена", "Association not completed");
+                }
+            });
+        } catch (RuntimeException e) {
+            android.util.Log.w(TAG, "Companion setup failed", e);
+            message(app, "Прив’язка недоступна", "Привязка недоступна", "Association unavailable");
+        }
+    }
+
+    /** OS-managed presence is an independent wake source; all sources share the same job. */
+    public static final class PresenceService extends CompanionDeviceService {
+        private void event(AssociationInfo info, boolean connected) {
+            if (info == null || info.getDeviceMacAddress() == null) return;
+            String address = info.getDeviceMacAddress().toString().toUpperCase(Locale.ROOT);
+            if (presenceEnabled(this, address)) dispatchReconnect(this, address, connected);
+        }
+        @Override public void onDeviceAppeared(AssociationInfo info) { event(info, true); }
+        @Override public void onDeviceDisappeared(AssociationInfo info) { event(info, false); }
+        @Override public void onDevicePresenceEvent(DevicePresenceEvent event) {
+            if (Build.VERSION.SDK_INT < 36 || event == null) return;
+            int kind = event.getEvent();
+            if (kind != DevicePresenceEvent.EVENT_BT_CONNECTED && kind != DevicePresenceEvent.EVENT_BT_DISCONNECTED &&
+                    kind != DevicePresenceEvent.EVENT_BLE_APPEARED && kind != DevicePresenceEvent.EVENT_BLE_DISAPPEARED) return;
+            CompanionDeviceManager manager = getSystemService(CompanionDeviceManager.class);
+            if (manager == null) return;
+            try {
+                for (AssociationInfo info : manager.getMyAssociations()) {
+                    if (info.getId() == event.getAssociationId()) {
+                        event(info, kind == DevicePresenceEvent.EVENT_BT_CONNECTED || kind == DevicePresenceEvent.EVENT_BLE_APPEARED);
+                        break;
+                    }
+                }
+            } catch (RuntimeException e) { android.util.Log.w(TAG, "Presence event unavailable", e); }
         }
     }
 
@@ -228,6 +374,18 @@ public final class ModeSettingsUi {
         content.addView(detail);
         addSwitch(a, content, address, "anc", tr("Підтримувати режим шумозаглушення", "Сохранять режим шумоподавления", "Keep noise control mode"));
         addSwitch(a, content, address, "game", tr("Підтримувати ігровий режим", "Сохранять игровой режим", "Keep game mode"));
+        Button companion = new Button(a);
+        boolean enabled = presenceEnabled(a, formatMac(address));
+        companion.setText(enabled
+            ? tr("Вимкнути Companion-пробудження", "Отключить Companion-пробуждение", "Disable companion wake")
+            : tr("Дозволити фонове відновлення", "Разрешить фоновое восстановление", "Allow background restoration"));
+        companion.setOnClickListener(v -> configurePresence(a, address));
+        content.addView(companion);
+        TextView hint = new TextView(a);
+        hint.setText(tr("Одноразове системне підтвердження для цього комплекту. Резервне відновлення через Bluetooth працює незалежно.",
+            "Однократное системное подтверждение для этого комплекта. Резервное восстановление через Bluetooth работает независимо.",
+            "One-time system consent for this headset. Bluetooth fallback remains independent."));
+        content.addView(hint);
         ScrollView scroll = new ScrollView(a);
         scroll.addView(content);
         new AlertDialog.Builder(a).setTitle(title()).setView(scroll)
