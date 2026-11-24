@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the pinned hxreborn v1.80.0 tree for our five-patch *local* Morphe bundle.
+"""Prepare the pinned hxreborn v1.80.0 tree for our six-patch *local* Morphe bundle.
 
 Builds only from a fresh, pinned Git checkout. Never modifies this repository,
 user APKs, Android devices, system settings or credentials.
@@ -73,8 +73,8 @@ def rewrite_info(project: Path) -> None:
     expected = {
         'name = "hxreborn’s patches"': f'name = "{BUNDLE_NAME}"',
         'description = "Patches for the apps I actually use"':
-            'description = "Five realme Link 5.8.811.2814 Morphe patches: '
-            'AMOLED theme, session bypass, ANC mode memory, Game Mode memory and clean home screen"',
+            'description = "Six realme Link 5.8.811.2814 Morphe patches: '
+            'AMOLED theme, session bypass, ANC mode memory, Game Mode memory clean home screen and experimental single tap"',
         'source = "git@github.com:hxreborn/morphe-patches.git"':
             'source = "https://github.com/Rafaello0/RealmeLink-Plus"',
         'author = "hxreborn"':
@@ -89,7 +89,7 @@ def rewrite_info(project: Path) -> None:
             raise RuntimeError(f"Expected exactly one Gradle metadata field {old!r}")
         s = s.replace(old, new, 1)
     # The upstream Morphe shared library also bundles generic all-app patches.
-    # None is used by our five realme patches; keep them out of the local .mpp.
+    # None is used by our six realme patches; keep them out of the local .mpp.
     build_marker = 'tasks {\n    jar {'
     if s.count(build_marker) != 1:
         raise RuntimeError("Expected upstream jar task not found")

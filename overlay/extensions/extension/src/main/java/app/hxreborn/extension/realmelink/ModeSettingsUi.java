@@ -6,6 +6,12 @@ package app.hxreborn.extension.realmelink;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Application;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.provider.Settings;
+import android.service.notification.StatusBarNotification;
+import java.util.ArrayList;
+import java.util.List;
 import android.app.job.JobInfo;
 import android.app.job.JobParameters;
 import android.app.job.JobScheduler;
@@ -234,14 +240,15 @@ public final class ModeSettingsUi {
         @Override public void onDevicePresenceEvent(DevicePresenceEvent event) {
             if (Build.VERSION.SDK_INT < 36 || event == null) return;
             int kind = event.getEvent();
-            if (kind != DevicePresenceEvent.EVENT_BT_CONNECTED && kind != DevicePresenceEvent.EVENT_BT_DISCONNECTED &&
-                    kind != DevicePresenceEvent.EVENT_BLE_APPEARED && kind != DevicePresenceEvent.EVENT_BLE_DISAPPEARED) return;
+            // BLE advertisements can occur while the earbuds are inside the case.
+            // Only a classic Bluetooth connection/disconnection is authoritative here.
+            if (kind != DevicePresenceEvent.EVENT_BT_CONNECTED && kind != DevicePresenceEvent.EVENT_BT_DISCONNECTED) return;
             CompanionDeviceManager manager = getSystemService(CompanionDeviceManager.class);
             if (manager == null) return;
             try {
                 for (AssociationInfo info : manager.getMyAssociations()) {
                     if (info.getId() == event.getAssociationId()) {
-                        event(info, kind == DevicePresenceEvent.EVENT_BT_CONNECTED || kind == DevicePresenceEvent.EVENT_BLE_APPEARED);
+                        event(info, kind == DevicePresenceEvent.EVENT_BT_CONNECTED);
                         break;
                     }
                 }
@@ -379,18 +386,69 @@ public final class ModeSettingsUi {
         companion.setText(enabled
             ? tr("Вимкнути Companion-пробудження", "Отключить Companion-пробуждение", "Disable companion wake")
             : tr("Дозволити фонове відновлення", "Разрешить фоновое восстановление", "Allow background restoration"));
-        companion.setOnClickListener(v -> configurePresence(a, address));
+        companion.setOnClickListener(v -> {
+            configurePresence(a, address);
+            companion.setText(presenceEnabled(a, formatMac(address))
+                ? tr("Вимкнути Companion-пробудження", "Отключить Companion-пробуждение", "Disable companion wake")
+                : tr("Дозволити фонове відновлення", "Разрешить фоновое восстановление", "Allow background restoration"));
+        });
         content.addView(companion);
         TextView hint = new TextView(a);
         hint.setText(tr("Одноразове системне підтвердження для цього комплекту. Резервне відновлення через Bluetooth працює незалежно.",
             "Однократное системное подтверждение для этого комплекта. Резервное восстановление через Bluetooth работает независимо.",
             "One-time system consent for this headset. Bluetooth fallback remains independent."));
         content.addView(hint);
+        Button notifications = new Button(a);
+        notifications.setText(tr("Канали сповіщень realme Link", "Каналы уведомлений realme Link", "realme Link notification channels"));
+        notifications.setOnClickListener(v -> showNotificationChannels(a));
+        content.addView(notifications);
         ScrollView scroll = new ScrollView(a);
         scroll.addView(content);
         new AlertDialog.Builder(a).setTitle(title()).setView(scroll)
             .setPositiveButton(android.R.string.ok, null).show();
     }
+    private static void showNotificationChannels(Activity a) {
+        if (a.isFinishing() || a.isDestroyed()) return;
+        NotificationManager manager = a.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        try {
+            List<NotificationChannel> channels = manager.getNotificationChannels();
+            List<String> ids = new ArrayList<>();
+            List<String> labels = new ArrayList<>();
+            Map<String, Integer> active = new HashMap<>();
+            for (StatusBarNotification notification : manager.getActiveNotifications()) {
+                String id = notification.getNotification().getChannelId();
+                if (id != null) active.put(id, active.getOrDefault(id, 0) + 1);
+            }
+            for (NotificationChannel channel : channels) {
+                ids.add(channel.getId());
+                labels.add(channel.getName() + " [" + channel.getId() + "]"
+                    + (active.containsKey(channel.getId()) ? " · " + active.get(channel.getId()) : ""));
+            }
+            if (ids.isEmpty()) {
+                message(a, "Канали сповіщень не знайдено", "Каналы уведомлений не найдены", "No notification channels found");
+                return;
+            }
+            new AlertDialog.Builder(a).setTitle(tr("Канали сповіщень", "Каналы уведомлений", "Notification channels"))
+                .setItems(labels.toArray(new String[0]), (dialog, index) ->
+                    new AlertDialog.Builder(a).setMessage(tr(
+                        "Вимкнення каналу впливає на всі його сповіщення. Голосові попередження самих навушників тут не вимикаються.",
+                        "Отключение канала влияет на все его уведомления. Голосовые предупреждения самих наушников здесь не отключаются.",
+                        "Disabling a channel affects all its notifications. Earbud voice prompts are not controlled here."))
+                        .setPositiveButton(android.R.string.ok, (d, which) -> {
+                            try {
+                                Intent settings = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, a.getPackageName())
+                                    .putExtra(Settings.EXTRA_CHANNEL_ID, ids.get(index));
+                                a.startActivity(settings);
+                            } catch (RuntimeException e) { android.util.Log.w(TAG, "Channel settings unavailable", e); }
+                        }).setNegativeButton(android.R.string.cancel, null).show())
+                .setNegativeButton(android.R.string.cancel, null).show();
+        } catch (RuntimeException e) {
+            android.util.Log.w(TAG, "Notification channel list unavailable", e);
+        }
+    }
+
     private static void addSwitch(Activity a, LinearLayout content, String address, String mode, String title) {
         if (!ModeKeeper.modeAvailable(mode)) return;
         Switch control = new Switch(a);

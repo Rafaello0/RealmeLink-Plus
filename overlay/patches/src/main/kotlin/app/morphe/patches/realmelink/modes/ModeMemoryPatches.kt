@@ -125,10 +125,14 @@ private val reconnectManifest = resourcePatch {
 }
 
 // One shared hook prevents double-writing and keeps ANC and Game Mode independently selectable.
+private val runtimeExtension = bytecodePatch {
+    compatibleWith(AppCompatibilities.REALME_LINK)
+    extendWith("extensions/extension.mpe")
+}
+
 private val modeMemoryInfrastructure = bytecodePatch {
     compatibleWith(AppCompatibilities.REALME_LINK)
-    dependsOn(reconnectManifest)
-    extendWith("extensions/extension.mpe")
+    dependsOn(runtimeExtension, reconnectManifest)
 
     execute {
         AppCreate.matchSingle().method.addInstructions(
@@ -183,6 +187,27 @@ val rememberGameModePatch = bytecodePatch(
         )
         AlternateToggleClick.matchSingle().method.addInstructions(
             0, "invoke-static { p0, p2 }, $EXT->markUiAction(Ljava/lang/Object;Ljava/lang/Object;)V",
+        )
+    }
+}
+
+private object GestureGroup : Fingerprint(
+    definingClass = "Lcom/realme/iot/headset/utils/ItemFactory;",
+    name = "N", returnType = "Ljava/util/List;",
+    parameters = listOf("Lcom/realme/iot/common/model/rus/headset/HeadsetViewItem;"),
+)
+
+@Suppress("unused")
+val experimentalSingleTapPatch = bytecodePatch(
+    name = "Expose single tap (experimental)",
+    description = "Adds Play/Pause and Off to the single-tap menu using existing gesture mappings. No automatic writes. Earbud firmware may reject the action.",
+    default = false,
+) {
+    compatibleWith(AppCompatibilities.REALME_LINK)
+    dependsOn(runtimeExtension)
+    execute {
+        GestureGroup.matchSingle().method.addInstructions(
+            0, "invoke-static { p0 }, $EXT->exposeSingleTap(Ljava/lang/Object;)V",
         )
     }
 }

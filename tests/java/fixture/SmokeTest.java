@@ -90,6 +90,7 @@ public class SmokeTest {
   ModeKeeper.onVendorStatus(bud, Status.CONNECTING);
   Handler.drain();
   check(m.writes==before,"intermediate status ignored");
+  GestureTest.run();
   System.out.println("SMOKE PASS: saved modes, read-before-write, verify, cooldown, unknown rows");
  }
 }
